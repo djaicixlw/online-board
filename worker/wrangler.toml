@@ -1,0 +1,37 @@
+name = "online-board"
+main = "src/index.ts"
+compatibility_date = "2026-11-07"
+
+# Раздача собранного фронтенда через Workers Static Assets.
+# Статические файлы отдаются напрямую с edge Cloudflare без вызова Worker-скрипта
+# (не расходуют дневной лимит 100 000 запросов Worker).
+[assets]
+directory = "../web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/ws/*"]
+
+# Привязка Durable Object «Board» (комната доски)
+[[durable_objects.bindings]]
+name = "BOARD"
+class_name = "Board"
+
+# Миграция Durable Object на бесплатном SQLite-хранилище (new_sqlite_classes)
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Board"]
+
+# Привязка базы данных D1 с именем DB.
+# В задаче T0 сама база ещё не создаётся (схема и миграции создаются в T3).
+# Инструкция по созданию базы и подключению database_id приведена в README.md.
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "online-board-db"
+# database_id = "<ЗАМЕНИТЕ_НА_UUID_ИЗ_WRANGLER_D1_CREATE>"
+
+# Переменные окружения по умолчанию (для продакшена).
+# Для локальной разработки ALLOW_ANY_BOARD_ID=true задаётся в worker/.dev.vars
+# (создаётся из .dev.vars.example).
+[vars]
+SAVE_INTERVAL_MS = "10000"
+ALLOW_ANY_BOARD_ID = "false"
