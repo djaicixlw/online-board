@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.wrangler/
+coverage/
+web/public/fonts/
+web/public/excalidraw-assets/
+package-lock.json
+SPEC.md
+AGENTS.md
