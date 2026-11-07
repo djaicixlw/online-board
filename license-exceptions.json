@@ -1,0 +1,44 @@
+{
+  "exceptions": [
+    {
+      "package": "tslib",
+      "license": "0BSD",
+      "reason": "Транзитивная зависимость TypeScript/Excalidraw; 0BSD — публично-доменная пермиссивная лицензия (BSD Zero Clause) без требований атрибуции."
+    },
+    {
+      "package": "caniuse-lite",
+      "license": "CC-BY-4.0",
+      "reason": "Транзитивная база таблиц совместимости браузеров (используется сборщиком Vite/esbuild только на этапе сборки, не содержит исполняемого кода в рантайме)."
+    },
+    {
+      "package": "spdx-exceptions",
+      "license": "CC-BY-3.0",
+      "reason": "Транзитивный справочник идентификаторов SPDX (используется стандартными утилитами npm/валидации пакетов только при разработке)."
+    },
+    {
+      "package": "spdx-license-ids",
+      "license": "CC0-1.0",
+      "reason": "Транзитивный список стандартных идентификаторов лицензий SPDX под CC0-1.0 (общественное достояние)."
+    },
+    {
+      "package": "argparse",
+      "license": "Python-2.0",
+      "reason": "Транзитивная зависимость парсера YAML (js-yaml в составе ESLint), пермиссивная лицензия PSF-2.0, используется только при линтинге."
+    },
+    {
+      "package": "jackspeak",
+      "license": "BlueOak-1.0.0",
+      "reason": "Транзитивная зависимость glob в инструментах разработки (ESLint/Vitest); пермиссивная лицензия Blue Oak Model License 1.0.0."
+    },
+    {
+      "package": "path-scurry",
+      "license": "BlueOak-1.0.0",
+      "reason": "Транзитивная зависимость glob в инструментах разработки (ESLint/Vitest); пермиссивная лицензия Blue Oak Model License 1.0.0."
+    },
+    {
+      "package": "package-json-from-dist",
+      "license": "BlueOak-1.0.0",
+      "reason": "Транзитивная утилита разрешения путей в glob (инструменты разработки); пермиссивная лицензия Blue Oak Model License 1.0.0."
+    }
+  ]
+}
