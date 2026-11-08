@@ -168,8 +168,8 @@ server.on("upgrade", (req, socket, head) => {
             const current = room.elements.get(el.id);
             if (shouldReplaceElement(current, el)) {
               room.elements.set(el.id, el);
+              updated.push(el);
             }
-            updated.push(el);
           }
         }
         if (updated.length === 0) return;

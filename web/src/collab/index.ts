@@ -25,6 +25,7 @@ export {
 export {
   CLIENT_ID_STORAGE_KEY,
   generateBoardId,
+  getOrCreateClientId,
   isValidBoardId,
   loadSavedNickname,
   NICK_STORAGE_KEY,

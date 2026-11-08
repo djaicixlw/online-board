@@ -188,9 +188,10 @@ describe("Task T1: Board Room Durable Object and WebSocket Collaboration", () =>
     ]);
   });
 
-  it("reconciles elements by version and versionNonce (lower versionNonce wins on tie) and prunes 30-day deleted elements on flush", async () => {
+  it("reconciles elements by version and versionNonce (lower versionNonce wins on tie), skips broadcast when all elements lose, and prunes 30-day deleted elements on flush", async () => {
     const harness = createBoardTestHarness(Board);
     const clientA = await connectClient(harness, VALID_BOARD_ID, "A");
+    const clientPeer = await connectClient(harness, VALID_BOARD_ID, "Peer");
     const nowMs = 1_794_114_000_000;
     const fortyDaysAgo = nowMs - 40 * 24 * 60 * 60 * 1000;
     const fiveDaysAgo = nowMs - 5 * 24 * 60 * 60 * 1000;
@@ -208,8 +209,10 @@ describe("Task T1: Board Room Durable Object and WebSocket Collaboration", () =>
       }),
       nowMs,
     );
+    expect(clientPeer.clientSocket.sentMessages.length).toBe(1);
+    clientPeer.clientSocket.sentMessages.length = 0;
 
-    // Lower version (v1) should be ignored
+    // Lower version (v1) should be ignored AND not broadcast to peers
     await clientA.board.webSocketMessage(
       clientA.serverSocket,
       JSON.stringify({
@@ -218,8 +221,9 @@ describe("Task T1: Board Room Durable Object and WebSocket Collaboration", () =>
       }),
       nowMs,
     );
+    expect(clientPeer.clientSocket.sentMessages.length).toBe(0);
 
-    // Same version (v2) with HIGHER versionNonce (600 > 500) should be ignored
+    // Same version (v2) with HIGHER versionNonce (600 > 500) should be ignored AND not broadcast
     await clientA.board.webSocketMessage(
       clientA.serverSocket,
       JSON.stringify({
@@ -228,8 +232,9 @@ describe("Task T1: Board Room Durable Object and WebSocket Collaboration", () =>
       }),
       nowMs,
     );
+    expect(clientPeer.clientSocket.sentMessages.length).toBe(0);
 
-    // Same version (v2) with LOWER versionNonce (300 < 500) should WIN
+    // Same version (v2) with LOWER versionNonce (300 < 500) should WIN and be broadcast
     await clientA.board.webSocketMessage(
       clientA.serverSocket,
       JSON.stringify({
@@ -238,6 +243,7 @@ describe("Task T1: Board Room Durable Object and WebSocket Collaboration", () =>
       }),
       nowMs,
     );
+    expect(clientPeer.clientSocket.sentMessages.length).toBe(1);
 
     // Before flush, both soft-deleted elements are still in memory
     expect(clientA.board.getMetrics().elementsCount).toBe(3);
@@ -258,13 +264,17 @@ describe("Task T1: Board Room Durable Object and WebSocket Collaboration", () =>
     ]);
   });
 
-  it("persists chunked snapshots (<= 900 KB) to SQLite, deletes only extra old chunks, and survives DO recreation", async () => {
+  it("persists chunked snapshots (<= 900 KB) to SQLite, deletes only extra old chunks, and survives DO recreation (including hibernation before first flush)", async () => {
     const harness = createBoardTestHarness(Board, { SAVE_INTERVAL_MS: "1000" });
     const conn1 = await connectClient(harness, VALID_BOARD_ID, "Teacher");
 
-    // Create a large scene (> 900 KB -> 2 chunks)
+    // Simulate hibernation wake-up BEFORE any snapshot flush has occurred:
+    // boardId must be restored from WebSocketAttachment.boardId (not "unknown")
+    const wokenBeforeFlush = await harness.recreateBoard(VALID_BOARD_ID);
+
+    // Create a large scene (> 900 KB -> 2 chunks) on the woken instance
     const bigPayload = "X".repeat(MAX_SNAPSHOT_CHUNK_BYTES + 100_000);
-    await conn1.board.webSocketMessage(
+    await wokenBeforeFlush.board.webSocketMessage(
       conn1.serverSocket,
       JSON.stringify({
         type: "scene_update",
@@ -276,10 +286,11 @@ describe("Task T1: Board Room Durable Object and WebSocket Collaboration", () =>
     );
 
     // Trigger alarm to flush snapshot
-    await conn1.board.alarm();
+    await wokenBeforeFlush.board.alarm();
 
     const sqlStorage = harness.storages.get(VALID_BOARD_ID)!.sql;
     expect(sqlStorage.snapshotTable.size).toBe(2);
+    expect(sqlStorage.metaTable.get("board_id")).toBe(VALID_BOARD_ID);
 
     // Simulate Durable Object eviction and recreation on the same SQLite storage
     const recreated = await harness.recreateBoard(VALID_BOARD_ID);

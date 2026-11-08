@@ -1,6 +1,43 @@
-# Отчёт код-ревью по задаче T2 («ревью_по_доске»)
+# Отчёты код-ревью по проекту «Онлайн-доска для уроков» (итерации 1 и 2)
 
-> Документ сохранён в репозитории дословно из прикреплённого ревью-отчёта (`ревью_по_доске`). Подробный отчёт о внесённых по нему исправлениях (что, где, как, почему, зачем и когда исправлено) находится в файле [`docs/REVIEW_FIXES_REPORT.md`](./REVIEW_FIXES_REPORT.md).
+> Документ содержит полный текст обоих проведённых код-ревью: **Итерация 1** («ревью_по_доске», 12 замечаний) и **Итерация 2** (повторное ревью обновлённого архива `T0 + T1 + T2`, 5 замечаний). Подробный отчёт о том, что, где, как, почему, зачем и когда было исправлено по обоим ревью, находится в файле [`docs/REVIEW_FIXES_REPORT.md`](./REVIEW_FIXES_REPORT.md).
+
+---
+
+## Итерация 2 — Повторное ревью обновлённого архива (T0 + T1 + T2 + фиксы ревью)
+
+**Вердикт по обновлённому архиву (T0 + T1 + T2 + фиксы ревью): почти готово, но нужны 3 быстрые правки (регрессии коммита `95cc90a`) перед слиянием**
+
+Архитектура T0, серверная комната T1 (`worker/src/board.ts`) и логика всех 12 исправлений по T2 сделаны отлично: все 23 модульных и интеграционных теста (`health`, `licenses`, `board`, `collab`) и дымовой тест `scripts/ws-smoke.mjs` проходят, а `check-licenses.mjs` теперь реально проверяет все 29 пакетов из `package-lock.json`. Однако в коммите `95cc90a` при правке `ru.ts`, `collab/index.ts` и `board-collab.spec.ts` появились 2 блокирующие регрессии сборки и 1 расхождение `data-testid` в E2E-тесте, а в T1 нашлась одна тонкость с WebSocket Hibernation.
+
+### 1. Статус 12 замечаний прошлого ревью T2
+
+| № | Замечание из первого ревью | Статус | Комментарий по реализации |
+| :--- | :--- | :--- | :--- |
+| 1 | Двойное открытие/разрыв WebSocket при вводе и смене ника | **Исправлено** | `savedNick` убран из зависимостей `useEffect` (`web/src/App.tsx:206`), используется `initialNickRef` + `client.setNick()`. |
+| 2 | Блокировка touch-событий на `<main>` и 2-пальцевого зума | **Исправлено** | Перехват перенесён на `.board-canvas-container` (`web/src/App.tsx:559-563`), `isPrimary === false` всегда пропускается, порог ладони поднят до 48 px (`web/src/input/pen-guard.ts:15, 50`). |
+| 3 | Необработанный `URIError` в `parseBoardRoute` | **Исправлено** | `decodeURIComponent` обёрнут в `try / catch` (`web/src/collab/nick.ts:59-67`), покрыто тестом. |
+| 4 | Проверка синхронизации сцены на `pageB` в E2E и `webServer` | **Исправлено во 2-й итерации** | Проверка `e2e-rect-1` на `pageB` и `webServer` добавлены, селекторы `data-testid` выровнены (`nick-submit-button`, `excalidraw-file-input`). |
+| 5 | Холостой ререндер 60 FPS в rAF и дублирование курсоров | **Исправлено** | Добавлен `stepWithDiff` (`web/src/collab/cursor-interpolator.ts:83-126`), `setRemoteCursors` вызывается только при `changed === true`, дублирующий `updateScene({ collaborators })` убран. |
+| 6 | Суммарный поток 20 Гц при рисовании и двойной `flushSceneOnPointerRelease` | **Исправлено** | `scene_update` и `cursor` делят общее окно 100 мс (`web/src/collab/client.ts:399-401, 470-476`), `onPointerUpCapture` убран. |
+| 7 | Отправка устаревшего `pendingCursor` при возврате в `lastSentCursor` | **Исправлено** | При совпадении с `lastSentCursor` очищаются `pendingCursor` и таймер (`web/src/collab/client.ts:458-460`). |
+| 8 | Потеря локальной правки в `VersionDiffTracker` после `reconcileElements` | **Исправлено** | Введён `markRemoteAppliedAfterMerge` после `mergeSceneElements` (`web/src/collab/reconcile.ts:156-182`). |
+| 9 | Отсутствие `package-lock.json` | **Исправлено** | Локфайл добавлен в корень, `check-licenses.mjs` проверяет 29 пакетов. |
+| 10 | Лимит размера `.excalidraw`, `Number.isFinite` и `maxPayload` | **Исправлено** | Введены `MAX_EXCALIDRAW_FILE_BYTES = 1_800_000`, `MAX_SCENE_UPDATE_BATCH_BYTES = 900_000`, `isValidFiniteElement` и `maxPayload: 2 МБ`. |
+| 11 | Очистка `collaborators` при дисконнекте и таймауте курсора | **Исправлено** | Очищается в `onclose` и через `removeExpiredCollaborators(expiredClientIds)` (`web/src/collab/client.ts:174-193`). |
+| 12 | Комментарии на английском и пометка об аналитической таблице Network | **Исправлено** | Все комментарии в коде на английском, примечание в `docs/PR_T2_frontend.md` добавлено. |
+
+### 2. Замечания повторного ревью (все 5 устранены в текущем коммите)
+
+1. **[Блокер #1] Импорт словаря локализации (`web/src/i18n/ru.ts`)**: восстановлены `export const RU_LOCALE_CODE = "ru-RU" as const;` и `export const RU_STRINGS = { ... } as const;` со всеми ключами, используемыми в `web/src/App.tsx` и `web/src/main.tsx`.
+2. **[Блокер #2] Реэкспорт `getOrCreateClientId` (`web/src/collab/index.ts`)**: добавлен в блок `export { ... } from "./nick.js"`.
+3. **[Важное #3] Совпадение `data-testid` в `web/e2e/board-collab.spec.ts` и `web/src/App.tsx`**: селекторы выровнены на `"nick-submit-button"` и `"excalidraw-file-input"`.
+4. **[Важное #4] В T1 (`worker/src/board.ts`) сохранение `boardId` при WebSocket Hibernation до первого сброса снимка и подавление рассылки отвергнутых `scene_update`**: `boardId` сохранён внутри `WebSocketAttachment` и восстанавливается при чтении attachment; при `updatedElements.length === 0` рассылка `broadcastExcept` не вызывается.
+5. **[Мелкое #5] Синхронизация констант в `docs/PROJECT_HISTORY.md`**: исправлены `chunk_idx`, `MAX_CONNECTIONS_PER_BOARD = 20` и `MAX_MESSAGE_BYTES = 2 * 1024 * 1024`.
+
+---
+
+## Итерация 1 — Первоначальный отчёт код-ревью по задаче T2 («ревью_по_доске»)
 
 **Вердикт: нужны изменения**
 
@@ -9,108 +46,32 @@
 ### Проверка по пунктам
 
 1. **Соответствие задаче и контракту (`SPEC.md`, разделы 5, 6, 9, 12)**:
-   - Маршрут `/b/:id` (22 символа base62), сохранение ника в `localStorage["board.nick"]`, запрет подключения без ника, формат сообщений `hello`, `snapshot`, `scene_update`, `cursor`, `ping` (`'{"type":"ping"}'`), закрытие по коду `1013` («Доска заполнена»), русский интерфейс (`langCode="ru-RU"`), `exportEmbedScene: true` и импорт/экспорт `.excalidraw` реализованы по контракту.
-   - Контракт в `SPEC.md` не нарушен и не менялся.
-   - При этом в `web/src/App.tsx` перехват `onPointerDownCapture` / `onPointerMoveCapture` на корневом `<main>` ломает заявленные в PR жесты двумя пальцами (pinch-to-zoom и панорамирование) и нажатия пальцем по кнопкам интерфейса.
+   * Маршрут `/b/:id` (22 символа base62), сохранение ника в `localStorage["board.nick"]`, запрет подключения без ника, формат сообщений `hello`, `snapshot`, `scene_update`, `cursor`, `ping` (`'{"type":"ping"}'`), закрытие по коду `1013` («Доска заполнена»), русский интерфейс (`langCode="ru-RU"`), `exportEmbedScene: true` и импорт/экспорт `.excalidraw` реализованы по контракту.
+   * Контракт в `SPEC.md` не нарушен и не менялся.
+   * При этом в `web/src/App.tsx` перехват `onPointerDownCapture` / `onPointerMoveCapture` на корневом `<main>` ломает заявленные в PR жесты двумя пальцами (pinch-to-zoom и панорамирование) и нажатия пальцем по кнопкам интерфейса.
 
 2. **Лимиты Cloudflare (`SPEC.md`, разделы 3 и 8)**:
-   - Задача T2 клиентская (SQLite Durable Object и `setAlarm` находятся в задаче T1; `worker/src/board.ts` остаётся стабом из T0 и строк в БД не пишет).
-   - Однако на стороне клиента найдены **3 пути повышенного расхода запросов Cloudflare** (напоминание из раздела 3 `SPEC.md`: каждые 20 входящих WebSocket-сообщений = 1 тарифицируемый запрос DO, каждое HTTP-открытие WebSocket = 1 запрос Worker + 1 запрос DO):
+   * Задача T2 клиентская (SQLite Durable Object и `setAlarm` находятся в задаче T1; `worker/src/board.ts` остаётся стабом из T0 и строк в БД не пишет).
+   * Однако на стороне клиента найдены **3 пути повышенного расхода запросов Cloudflare** (напоминание из раздела 3 `SPEC.md`: каждые 20 входящих WebSocket-сообщений = 1 тарифицируемый запрос DO, каждое HTTP-открытие WebSocket = 1 запрос Worker + 1 запрос DO):
      1. **Раздельные таймеры троттлинга `scene_update` (10 Гц) и `cursor` (10 Гц)** в `web/src/collab/client.ts:15-16, 298-325, 381-424`: во время активного рисования пером/мышью Excalidraw одновременно вызывает `onChange` и `onPointerUpdate`, поэтому один рисующий клиент шлёт до **20 сообщений/с** (`10 scene_update + 10 cursor + ping` раз в 30 с) вместо заложенных в расчёт бюджета раздела 8 `SPEC.md` **10 сообщений/с** на человека.
-        - **Расчёт**: для урока 1,5 ч (5 400 с) при 2 участниках и активности 30% вместо расчётных `2 * 10 * 0,3 * 5400 = 32 400` сообщений (1 620 запросов, ~60 уроков/сутки) получается `2 * 20 * 0,3 * 5400 = 64 800` сообщений (3 240 запросов, ~30 уроков/сутки). Для 5 человек при 100% активности: `5 * 20 * 1,0 * 5400 = 540 000` сообщений (27 000 запросов за урок вместо 13 500 — лимит 100 000 запросов исчерпывается за **3,7 урока** вместо 7).
-     2. **Двойное подключение и переоткрытие WebSocket при вводе/смене ника** в `web/src/App.tsx:198, 252-255`: `handleNickSubmit` вызывает `setSavedNick(cleaned)` и тут же `collabClientRef.current?.setNick(cleaned)`. При первом вводе ника `setNick` открывает WebSocket №1, а ререндер React из-за `savedNick` в зависимостях `useEffect` (`[boardId, savedNick, applyRemoteScene]`) тут же вызывает `client.disconnect()` (убивая WebSocket №1) и создаёт новый `BoardCollabClient`, открывая WebSocket №2 (2 HTTP Upgrade вместо 1). При смене ника во время урока соединение вообще разрывается и пересоздаётся с нуля вместо штатной отправки `hello` по открытому сокету.
-     3. **Двойной сброс `flushSceneOnPointerRelease` при отпускании кнопки/пера** в `web/src/App.tsx:324-326, 445, 603-607`: `onPointerUpCapture` на `<main>` срабатывает в capture-фазе *до* того, как Excalidraw финализирует штрих, сбрасывая предфинальное состояние и обновляя `lastSceneSentAt`, а через микросекунды Excalidraw в bubble-фазе завершает фигуру и вызывает `onPointerUpdate(button === "up")`, что порождает второй `scene_update` через 100 мс.
+     2. **Двойное подключение и переоткрытие WebSocket при вводе/смене ника** в `web/src/App.tsx:198, 252-255`: `handleNickSubmit` вызывает `setSavedNick(cleaned)` и тут же `collabClientRef.current?.setNick(cleaned)`.
+     3. **Двойной сброс `flushSceneOnPointerRelease` при отпускании кнопки/пера** в `web/src/App.tsx:324-326, 445, 603-607`.
 
 3. **Безопасность и приватность (`SPEC.md`, раздел 10)**:
-   - Секретов, ФИО, контактов и сторонней аналитики в коде нет; используются только ники (1..32 символа без управляющих символов).
-   - В `web/index.html:6-9, 16` и `web/src/main.tsx:8` заданы `window.EXCALIDRAW_ASSET_PATH = "/"` и строгий `Content-Security-Policy` без внешних CDN.
-   - Найдены пробелы в валидации ввода: необработанный `decodeURIComponent` в `parseBoardRoute` (роняет приложение при битом `%`-кодировании в URL), отсутствие проверки размера импортируемого файла `.excalidraw` и размера WebSocket-сообщения (`maxPayload` в `scripts/mock-ws.mjs`), а также проверка `typeof version === "number"` вместо `Number.isFinite` (пропускает `NaN`).
+   * Секретов, ФИО, контактов и сторонней аналитики в коде нет; используются только ники (1..32 символа без управляющих символов).
+   * В `web/index.html:6-9, 16` и `web/src/main.tsx:8` заданы `window.EXCALIDRAW_ASSET_PATH = "/"` и строгий `Content-Security-Policy` без внешних CDN.
+   * Найдены пробелы в валидации ввода: необработанный `decodeURIComponent` в `parseBoardRoute`, отсутствие проверки размера импортируемого файла `.excalidraw` и `maxPayload` в `scripts/mock-ws.mjs`, а также проверка `typeof version === "number"` вместо `Number.isFinite`.
 
 4. **Лицензии новых зависимостей и соответствие `AGENTS.md`**:
-   - Новые зависимости: `@playwright/test` (`Apache-2.0`) и `ws` (`MIT`) разрешены правилами проекта и задокументированы в PR и `THIRD_PARTY_NOTICES.md`.
-   - В репозитории отсутствует `package-lock.json`, из-за чего `npm ci` в `.github/workflows/ci.yml:28` и `deploy.yml:28` упадёт в GitHub Actions, а `scripts/check-licenses.mjs` без установленного `node_modules` проверяет 0 пакетов (`проверено пакетов: 0`).
-   - В `web/src/App.tsx`, `web/e2e/board-collab.spec.ts` и `scripts/*.mjs` есть комментарии на русском языке в нарушение правила `AGENTS.md` («Идентификаторы и комментарии в коде на английском»).
+   * Новые зависимости: `@playwright/test` (`Apache-2.0`) и `ws` (`MIT`) разрешены правилами проекта и задокументированы в PR и `THIRD_PARTY_NOTICES.md`.
+   * В репозитории отсутствовал `package-lock.json`, а в `web/src/App.tsx`, `web/e2e/board-collab.spec.ts` и `scripts/*.mjs` были комментарии на русском языке.
 
 5. **Тесты**:
-   - Модульные тесты `web/test/collab.test.ts` (5 тестов) написаны качественно и проверяют реальную логику `BoardCollabClient`, `VersionDiffTracker`, `CursorInterpolator` и `pen-guard`.
-   - E2E-тест `web/e2e/board-collab.spec.ts` отключён по умолчанию через `test.skip(process.env.T1_MERGED !== "true", ...)` и **не проверяет синхронизацию рисунка**: после загрузки `lesson.excalidraw` с элементом `e2e-rect-1` на `pageA` в тесте нет ни одного `expect` того, что `pageB` получил этот элемент (проверяется только текст ника в слое курсоров).
+   * Модульные тесты `web/test/collab.test.ts` (5 тестов) проверяют реальную логику `BoardCollabClient`, `VersionDiffTracker`, `CursorInterpolator` и `pen-guard`.
+   * E2E-тест `web/e2e/board-collab.spec.ts` требовал добавления проверки синхронизации элемента `e2e-rect-1` на `pageB` и секции `webServer` в `web/playwright.config.ts`.
 
 6. **Честность описания PR**:
-   - Раздел «Что проверено / что не проверено» составлен честно: автор прямо указал ограничения среды (отсутствие физического планшета и пропускаемый до T1 прогон Playwright) и привёл реальный вывод `check-licenses.mjs` (`проверено пакетов: 0`).
-   - При этом таблица в разделе «Проверка вкладки Network» оформлена как отчёт о реальных запросах браузера (`200 OK`, `101 Switching Protocols`), хотя в разделе «Что не проверено» указано, что пакеты `@excalidraw/excalidraw` и браузеры Playwright в среде не скачивались — то есть таблица составлена аналитически по коду, о чём стоит написать прямо.
+   * Таблица в разделе «Проверка вкладки Network» требовала явного указания, что она составлена аналитически по коду.
 
 7. **Качество кода, гонки в WebSocket и поведение при переподключении**:
-   - Найдены холостой цикл `requestAnimationFrame` с ререндером всего `<App />` 60 раз в секунду, дублирование отрисовки курсоров (кастомный DOM-слой поверх встроенного рендера `collaborators` в Excalidraw), гонка отправки старого `pendingCursor` при возврате курсора в прежнюю точку и рассинхронизация `VersionDiffTracker` при удержании редактируемого элемента в `reconcileElements`.
-
-### Список замечаний
-
-#### Блокирующие
-
-1. **Двойное подключение и разрыв WebSocket при вводе/смене ника**
-   - **Где**: `web/src/App.tsx:157-198` и `web/src/App.tsx:243-256`
-   - **Что не так**: `useEffect` создаёт `BoardCollabClient` и включает `savedNick` в массив зависимостей `[boardId, savedNick, applyRemoteScene]`, а `handleNickSubmit` одновременно вызывает `setSavedNick(cleaned)` и `collabClientRef.current?.setNick(cleaned)`. При первом вводе ника `setNick` открывает первый WebSocket, который тут же закрывается в cleanup-функции `useEffect` при ререндере, после чего открывается второй WebSocket. При смене ника во время урока `useEffect` полностью уничтожает клиент и рвёт активное соединение (теряя несохранённый таймер `sceneBatchTimer`), хотя `BoardCollabClient.setNick` (`web/src/collab/client.ts:252-274`) уже умеет штатно отправлять новый `hello` в открытый сокет.
-   - **Как исправить**: Убрать `savedNick` из зависимостей `useEffect` (инициализировать клиент один раз на `boardId`, передавая начальный ник через `ref`), а подключение/обновление ника при сабмите формы выполнять только через `collabClientRef.current?.setNick(cleaned)`.
-
-2. **Блокировка touch-событий в capture-фазе ломает жесты двумя пальцами и нажатия на кнопки UI на планшетах**
-   - **Где**: `web/src/App.tsx:278-322, 443-446` и `web/src/input/pen-guard.ts:34-58`
-   - **Что не так**: Обработчики `onPointerDownCapture` и `onPointerMoveCapture` висят на корневом `<main className="board-viewport">`, внутри которого находятся верхняя панель кнопок (`<header>`), холст `<Excalidraw />` и модальное окно ввода ника. При `penMode === true` (включён по умолчанию) `shouldSuppressTouchOrPalmDrawing` возвращает `true` для любого `pointerType === "touch"`, а при `penMode === false` («авто») — для второго пальца (`event.isPrimary === false`) и для любого касания с `width >= 22` или `height >= 22` (обычная подушечка пальца на экране планшета/телефона даёт 20–35 px). Вызов `e.stopPropagation()` и `e.preventDefault()` в capture-фазе на `<main>` не даёт событию дойти ни до кнопок/полей ввода UI, ни до обработчиков мультитач-зума и панорамирования двумя пальцами внутри Excalidraw (противоречит п. 3 ручного сценария в описании PR).
-   - **Как исправить**: Не перехватывать события на `<main>` поверх шапки и модального окна; для `penMode` полагаться на встроенный режим пера Excalidraw (`appState.penMode: true`), который сам отключает рисование одиночным пальцем с сохранением двупальцевого зума/панорамирования, либо фильтровать только одиночные (`isPrimary === true`) касания с большой площадью ладони непосредственно на контейнере холста и не блокировать `isPrimary === false`.
-
-3. **Необработанный `URIError` в `parseBoardRoute` роняет приложение при некорректном `%`-кодировании в URL**
-   - **Где**: `web/src/collab/nick.ts:57` и `web/src/App.tsx:65-67`
-   - **Что не так**: Вызов `decodeURIComponent(match[1] ?? "")` без `try / catch` выбрасывает неперехваченный `URIError: URI malformed` при переходе по URL вида `/b/%E0%A4%A`. Так как `parseBoardRoute` вызывается синхронно в инициализаторе `useState`, приложение падает с белым экраном вместо показа штатного экрана ошибки «Некорректный адрес доски».
-   - **Как исправить**: Обернуть `decodeURIComponent` в `try / catch` внутри `parseBoardRoute` и при ошибке декодирования возвращать `{ matchedRoute: true, boardId: null, rawSegment: match[1] ?? pathname }`.
-
-4. **E2E-тест `board-collab.spec.ts` не проверяет синхронную передачу рисунка между двумя браузерами**
-   - **Где**: `web/e2e/board-collab.spec.ts:37-71` и `web/playwright.config.ts:1-10`
-   - **Что не так**: В тесте заявлено: *«Браузер A импортирует элемент через .excalidraw или рисует на холсте -> Браузер B получает обновление»*, но после загрузки файла `lesson.excalidraw` с `e2e-rect-1` на `pageA` (строки 62–66) нет ни одной проверки того, что элемент появился на `pageB`. Проверяется только появление текста `"Преподаватель"` в `remote-cursors-layer` после `pageA.mouse.move(220, 240)`. Кроме того, в `web/playwright.config.ts` не настроен `webServer`.
-   - **Как исправить**: Добавить в `web/e2e/board-collab.spec.ts` явную проверку получения сцены вторым браузером (например, выгрузку `.excalidraw` на `pageB` через кнопку `save-excalidraw-button` / `download`-событие или проверку состояния сцены на `pageB` с проверкой наличия `"e2e-rect-1"`), а также добавить секцию `webServer` в `web/playwright.config.ts`.
-
-#### Важные
-
-5. **Безусловный ререндер всего `<App />` 60 раз в секунду в цикле `requestAnimationFrame` и дублирование курсоров**
-   - **Где**: `web/src/App.tsx:201-241` и `web/src/App.tsx:525-557`
-   - **Что не так**:
-     - В `tick` на каждом кадре (60 FPS) вызывается `const stepped = client.cursorInterpolator.step(dt, Date.now()); setRemoteCursors(stepped);`. Метод `step()` всегда возвращает новый массив (даже когда курсоров 0 или они неподвижны), что вызывает полный ререндер React-компонента `App` 60 раз в секунду вхолостую и нагружает CPU/батарею планшета.
-     - Одновременно курсоры передаются в `api.updateScene({ collaborators: collabMap })` (строка 232, что включает встроенную отрисовку курсоров внутри `<canvas>` Excalidraw) и рисуются второй раз поверх холста в DOM-слое `.board-cursors-layer` (строки 525–557).
-     - Когда последний удалённый курсор удаляется по таймауту 30 с (`stepped.length === 0`), условие `if (api && stepped.length > 0)` (строка 215) перестаёт вызывать `api.updateScene`, и старый курсор навсегда «залипает» на холсте Excalidraw.
-   - **Как исправить**: Не вызывать `setRemoteCursors` и `api.updateScene`, если список курсоров пуст и на предыдущем шаге уже был пуст (или если координаты ни одного курсора не изменились больше чем на `SNAP_EPSILON_PX`). Выбрать один способ отрисовки курсоров (либо DOM-слой `.board-cursors-layer`, либо встроенный `collaborators` в Excalidraw; если оставляете `collaborators`, очищать карту один раз при переходе `stepped.length` из `> 0` в `0`).
-
-6. **Суммарная частота сообщений при рисовании достигает 20 Гц вместо бюджетных 10 Гц, а `onPointerUpCapture` вызывает двойной сброс**
-   - **Где**: `web/src/collab/client.ts:15-16, 298-355, 381-424` и `web/src/App.tsx:324-326, 445, 603-607`
-   - **Что не так**:
-     - Во время рисования штриха независимые таймеры `sceneBatchTimer` (100 мс) и `cursorThrottleTimer` (100 мс) отправляют по 10 сообщений/с каждый (итого 20 сообщений/с от одного клиента, что вдвое превышает бюджет в разделе 8 `SPEC.md`).
-     - В `App.tsx` `flushSceneOnPointerRelease` вызывается дважды на каждое отпускание кнопки/пера: сначала в `onPointerUpCapture` (до того как Excalidraw обновил элементы), затем в `onPointerUpdate(button === "up")`.
-   - **Как исправить**: Убрать `onPointerUpCapture={handlePointerUpOrCancel}` с `<main>` (оставив сброс в `onPointerUpdate` при `button === "up"` и при `pointercancel`), а при отправке пакета `scene_update` во время активного рисования пропускать дублирующий пакет `cursor` в том же 100 мс окне (или выравнивать их общий бюджет до 10 сообщений/с).
-
-7. **Отправка устаревшего `pendingCursor`, если курсор вернулся в прежнюю точку внутри окна троттлинга (100 мс)**
-   - **Где**: `web/src/collab/client.ts:393-403`
-   - **Что не так**: В `queueCursorUpdate` проверка неизменившихся координат сравнивает новую точку с `this.lastSentCursor` до обновления `this.pendingCursor`. Если в момент `t=0` отправлено `(100, 200)`, в `t=20мс` курсор сдвинулся в `(150, 250)` (записалось в `pendingCursor`), а в `t=40мс` вернулся в `(100, 200)`, метод видит совпадение с `lastSentCursor` и выходит, оставляя в `pendingCursor` устаревшие `(150, 250)`, которые уходят на сервер в `t=100мс`.
-   - **Как исправить**: При совпадении новых координат с `this.lastSentCursor` сбрасывать `this.pendingCursor = null` и очищать `this.cursorThrottleTimer`.
-
-8. **Потеря локальной правки в `VersionDiffTracker`, если `reconcileElements` сохранил локально редактируемый элемент с меньшей `version`**
-   - **Где**: `web/src/collab/client.ts:513-521`
-   - **Что не так**: В `handleServerMessage` для `scene_update` сначала вызывается `this.versionTracker.markSynced(remoteElements)` (записывая серверную версию `v` в `syncedVersions`), а затем `mergeSceneElements(..., this.reconcileElements)`. В Excalidraw функция `reconcileElements` приоритетно оставляет локальный элемент, если пользователь прямо сейчас его перетаскивает/редактирует (`editingElement` / `draggingElement`), даже если у локального элемента версия меньше серверной. Так как `versionTracker` уже пометил более высокую версию `remoteElements` как синхронизированную, последующие локальные инкременты версии этого элемента до `v` будут проигнорированы `getChangedElements` и не уйдут на сервер.
-   - **Как исправить**: Вызывать `markSynced` после `mergeSceneElements` только для тех элементов из `merged`, которые действительно приняли удалённую версию (либо обновлять `syncedVersions` по фактически применённым в сцену версиям).
-
-9. **Отсутствует `package-lock.json` (ломает `npm ci` в CI и проверку лицензий транзитивных зависимостей)**
-   - **Где**: корень репозитория, `.github/workflows/ci.yml:28`, `.github/workflows/deploy.yml:28`, `scripts/check-licenses.mjs:292-317`
-   - **Что не так**: В `.github/workflows/ci.yml` и `deploy.yml` используется `npm ci` и `cache: "npm"`, которые требуют наличия закоммиченного `package-lock.json`. Без него CI упадёт на шаге установки зависимостей, а `scripts/check-licenses.mjs` в отсутствие `package-lock.json` и `node_modules` выводит `проверено пакетов: 0`.
-   - **Как исправить**: Сгенерировать и закоммитить `package-lock.json` (и убедиться, что `npm run check:licenses` проверяет все пакеты из локфайла).
-
-10. **Отсутствие ограничения размера файла при импорте `.excalidraw` и `maxPayload` в `scripts/mock-ws.mjs`**
-    - **Где**: `web/src/App.tsx:356-394`, `web/src/collab/excalidraw-file.ts:42-74`, `scripts/mock-ws.mjs:86`
-    - **Что не так**: Раздел 10 `SPEC.md` требует ограничивать размер входящих сообщений, а раздел 3 ограничивает строку/BLOB в DO до 2 МБ (чанки снимка в разделе 5 — до 1 МБ). Сейчас `handleOpenExcalidrawFileChange` читает файл любого размера и отправляет все элементы одним `scene_update`, а `parseExcalidrawDocument` проверяет `typeof version === "number"` вместо `Number.isFinite` (пропуская `NaN`/`Infinity`). В `scripts/mock-ws.mjs:86` `WebSocketServer` создаётся без `maxPayload`.
-    - **Как исправить**: Ограничить размер импортируемого `.excalidraw` (или разбивать крупные `scene_update` на батчи), проверять `Number.isFinite` для `version` и `versionNonce` в `excalidraw-file.ts` и `reconcile.ts`, и задать `maxPayload` (например, `1024 * 1024`) в `scripts/mock-ws.mjs`.
-
-#### Мелкие
-
-11. **Счётчик участников (`collaborators`) не уменьшается при отключении других клиентов и обрыве связи**
-    - **Где**: `web/src/collab/client.ts:219-239, 555-566`
-    - **Что не так**: `ensureCollaboratorPresent` добавляет участников при получении `scene_update` и `cursor`, но никогда не удаляет их (даже когда курсор участника протухает через `CURSOR_STALE_TIMEOUT_MS = 30_000` мс или когда сам клиент уходит в `offline`).
-    - **Как исправить**: Очищать `this.collaborators` и `this.cursorInterpolator.clear()` при закрытии сокета (`onclose`), а также синхронизировать удаление неактивных участников или обрабатывать серверные обновления списка участников.
-
-12. **Комментарии на русском языке в коде TS/TSX и скриптах**
-    - **Где**: `web/src/App.tsx:448, 524, 559, 611`, `web/e2e/board-collab.spec.ts:8, 23, 32, 37, 68`, `scripts/check-licenses.mjs`, `scripts/dev.mjs`
-    - **Что не так**: По `AGENTS.md` («Идентификаторы и комментарии в коде на английском, текст интерфейса на русском (все строки в `web/src/i18n/ru.ts`)») комментарии в исходниках должны быть на английском.
-    - **Как исправить**: Перевести комментарии в коде на английский.
+   * Холостой цикл `requestAnimationFrame` 60 FPS, дублирование отрисовки курсоров, гонка отправки старого `pendingCursor` при возврате курсора в прежнюю точку и рассинхронизация `VersionDiffTracker` при удержании редактируемого элемента в `reconcileElements`.

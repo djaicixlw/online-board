@@ -38,6 +38,7 @@ export interface CollaboratorInfo {
 
 export interface WebSocketAttachment {
   sessionId: string;
+  boardId?: string;
   clientId: string | null;
   nick: string;
   connectedAt: number;
@@ -221,6 +222,9 @@ export class Board extends DurableObject<Env> {
     if (typeof this.ctx.getWebSockets === "function") {
       for (const ws of this.ctx.getWebSockets()) {
         const attachment = this.readAttachment(ws);
+        if (attachment?.boardId && this.boardId === "unknown") {
+          this.boardId = attachment.boardId;
+        }
         if (attachment && !attachment.rejected) {
           this.sessions.set(ws, {
             ...attachment,
@@ -260,8 +264,11 @@ export class Board extends DurableObject<Env> {
     if (typeof ws.serializeAttachment !== "function") {
       return;
     }
+    const resolvedBoardId =
+      state.boardId && state.boardId !== "unknown" ? state.boardId : this.boardId;
     const attachment: WebSocketAttachment = {
       sessionId: state.sessionId,
+      ...(resolvedBoardId !== "unknown" ? { boardId: resolvedBoardId } : {}),
       clientId: state.clientId,
       nick: state.nick,
       connectedAt: state.connectedAt,
@@ -277,6 +284,9 @@ export class Board extends DurableObject<Env> {
       return existing;
     }
     const attachment = this.readAttachment(ws);
+    if (attachment?.boardId && this.boardId === "unknown") {
+      this.boardId = attachment.boardId;
+    }
     if (!attachment || attachment.rejected) {
       return null;
     }
@@ -578,6 +588,7 @@ export class Board extends DurableObject<Env> {
       if (typeof server.serializeAttachment === "function") {
         server.serializeAttachment({
           sessionId: "rejected",
+          boardId: candidateBoardId,
           clientId: null,
           nick,
           connectedAt: Date.now(),
@@ -605,6 +616,7 @@ export class Board extends DurableObject<Env> {
     const nowMs = Date.now();
     const sessionState: SessionRuntimeState = {
       sessionId: crypto.randomUUID(),
+      boardId: candidateBoardId,
       clientId: null,
       nick,
       connectedAt: nowMs,
@@ -849,19 +861,18 @@ export class Board extends DurableObject<Env> {
 
         this.writeAttachment(ws, session);
 
-        if (updatedElements.length > 0) {
-          this.dirty = true;
-          await this.scheduleFlushAlarmIfNeeded(nowMs);
+        if (updatedElements.length === 0) {
+          return;
         }
+
+        this.dirty = true;
+        await this.scheduleFlushAlarmIfNeeded(nowMs);
 
         const broadcastPayload = JSON.stringify({
           type: "scene_update",
           client_id: session.clientId ?? session.sessionId,
           nick: session.nick,
-          elements:
-            updatedElements.length > 0
-              ? updatedElements
-              : msg.elements.filter(isValidExcalidrawElement),
+          elements: updatedElements,
         });
 
         this.broadcastExcept(ws, broadcastPayload);

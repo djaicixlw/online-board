@@ -27,10 +27,10 @@ test.describe("Board collaboration E2E (/b/:id)", () => {
     await expect(pageB.getByTestId("nick-dialog")).toBeVisible();
 
     await pageA.getByTestId("nick-input").fill("Алиса");
-    await pageA.getByTestId("nick-submit").click();
+    await pageA.getByTestId("nick-submit-button").click();
 
     await pageB.getByTestId("nick-input").fill("Борис");
-    await pageB.getByTestId("nick-submit").click();
+    await pageB.getByTestId("nick-submit-button").click();
 
     await expect(pageA.getByTestId("nick-dialog")).toBeHidden();
     await expect(pageB.getByTestId("nick-dialog")).toBeHidden();
@@ -58,7 +58,7 @@ test.describe("Board collaboration E2E (/b/:id)", () => {
       files: {},
     });
 
-    await pageA.getByTestId("open-excalidraw-input").setInputFiles({
+    await pageA.getByTestId("excalidraw-file-input").setInputFiles({
       name: "lesson.excalidraw",
       mimeType: "application/json",
       buffer: Buffer.from(sampleScene, "utf-8"),
@@ -70,7 +70,7 @@ test.describe("Board collaboration E2E (/b/:id)", () => {
       "1"
     );
 
-    // Fix #4: Verify Client B receives the synchronized scene_update and has 1 element applied
+    // Verify Client B receives the synchronized scene_update and has 1 element applied
     await expect(pageB.getByTestId("board-viewport")).toHaveAttribute(
       "data-scene-elements-count",
       "1"
