@@ -15,6 +15,7 @@
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "mock:ws": "node scripts/mock-ws.mjs",
     "build": "npm run build --workspaces --if-present",
     "test": "vitest run",
     "lint": "eslint . && prettier --check .",
@@ -28,6 +29,7 @@
     "prettier": "^3.3.3",
     "typescript": "^5.6.3",
     "typescript-eslint": "^8.13.0",
-    "vitest": "^2.1.4"
+    "vitest": "^2.1.4",
+    "ws": "^8.18.0"
   }
 }
