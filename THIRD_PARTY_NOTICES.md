@@ -6,41 +6,39 @@
 
 ### Корневой пакет (`package.json`)
 
-| Пакет | Версия | Лицензия | Репозиторий / Источник | Назначение |
-| :--- | :--- | :--- | :--- | :--- |
-| [@eslint/js](https://www.npmjs.com/package/@eslint/js) | `^9.14.0` | MIT | [github.com/eslint/eslint](https://github.com/eslint/eslint) | Базовые правила ESLint для JavaScript |
-| [eslint](https://www.npmjs.com/package/eslint) | `^9.14.0` | MIT | [github.com/eslint/eslint](https://github.com/eslint/eslint) | Статический анализатор кода (линтер) |
-| [prettier](https://www.npmjs.com/package/prettier) | `^3.3.3` | MIT | [github.com/prettier/prettier](https://github.com/prettier/prettier) | Проверка и автоформатирование кода |
-| [typescript](https://www.npmjs.com/package/typescript) | `^5.6.3` | Apache-2.0 | [github.com/microsoft/TypeScript](https://github.com/microsoft/TypeScript) | Компилятор и проверка типов TypeScript (`strict`) |
-| [typescript-eslint](https://www.npmjs.com/package/typescript-eslint) | `^8.13.0` | MIT | [github.com/typescript-eslint/typescript-eslint](https://github.com/typescript-eslint/typescript-eslint) | Поддержка TypeScript для ESLint Flat Config |
-| [vitest](https://www.npmjs.com/package/vitest) | `^2.1.4` | MIT | [github.com/vitest-dev/vitest](https://github.com/vitest-dev/vitest) | Фреймворк модульного тестирования |
+| Пакет | Версия | Лицензия | Репозиторий / Источник | Назначение | 
+| ----- | ----- | ----- | ----- | ----- | 
+| [@eslint/js](https://www.npmjs.com/package/@eslint/js) | `^9.14.0` | MIT | [github.com/eslint/eslint](https://github.com/eslint/eslint) | Базовые правила ESLint для JavaScript | 
+| [eslint](https://www.npmjs.com/package/eslint) | `^9.14.0` | MIT | [github.com/eslint/eslint](https://github.com/eslint/eslint) | Статический анализатор кода (линтер) | 
+| [prettier](https://www.npmjs.com/package/prettier) | `^3.3.3` | MIT | [github.com/prettier/prettier](https://github.com/prettier/prettier) | Проверка и автоформатирование кода | 
+| [typescript](https://www.npmjs.com/package/typescript) | `^5.6.3` | Apache-2.0 | [github.com/microsoft/TypeScript](https://github.com/microsoft/TypeScript) | Компилятор и проверка типов TypeScript (`strict`) | 
+| [typescript-eslint](https://www.npmjs.com/package/typescript-eslint) | `^8.13.0` | MIT | [github.com/typescript-eslint/typescript-eslint](https://github.com/typescript-eslint/typescript-eslint) | Поддержка TypeScript для ESLint Flat Config | 
+| [vitest](https://www.npmjs.com/package/vitest) | `^2.1.4` | MIT | [github.com/vitest-dev/vitest](https://github.com/vitest-dev/vitest) | Фреймворк модульного тестирования | 
 
 ### Фронтенд (`web/package.json`)
 
-| Пакет | Версия | Лицензия | Репозиторий / Источник | Назначение |
-| :--- | :--- | :--- | :--- | :--- |
-| [@excalidraw/excalidraw](https://www.npmjs.com/package/@excalidraw/excalidraw) | `^0.18.0` | MIT | [github.com/excalidraw/excalidraw](https://github.com/excalidraw/excalidraw) | Компонент интерактивного холста доски |
-| [react](https://www.npmjs.com/package/react) | `^18.3.1` | MIT | [github.com/facebook/react](https://github.com/facebook/react) | UI-библиотека (зависимость Excalidraw и интерфейса) |
-| [react-dom](https://www.npmjs.com/package/react-dom) | `^18.3.1` | MIT | [github.com/facebook/react](https://github.com/facebook/react) | Рендеринг React-компонентов в DOM |
-| [@types/react](https://www.npmjs.com/package/@types/react) | `^18.3.12` | MIT | [github.com/DefinitelyTyped/DefinitelyTyped](https://github.com/DefinitelyTyped/DefinitelyTyped) | Типы TypeScript для React |
-| [@types/react-dom](https://www.npmjs.com/package/@types/react-dom) | `^18.3.1` | MIT | [github.com/DefinitelyTyped/DefinitelyTyped](https://github.com/DefinitelyTyped/DefinitelyTyped) | Типы TypeScript для React DOM |
-| [@vitejs/plugin-react](https://www.npmjs.com/package/@vitejs/plugin-react) | `^4.3.3` | MIT | [github.com/vitejs/vite-plugin-react](https://github.com/vitejs/vite-plugin-react) | Плагин сборки React для Vite |
-| [vite](https://www.npmjs.com/package/vite) | `^5.4.10` | MIT | [github.com/vitejs/vite](https://github.com/vitejs/vite) | Сборщик и dev-сервер фронтенда |
+| Пакет | Версия | Лицензия | Репозиторий / Источник | Назначение | 
+| ----- | ----- | ----- | ----- | ----- | 
+| [@excalidraw/excalidraw](https://www.npmjs.com/package/@excalidraw/excalidraw) | `^0.18.0` | MIT | [github.com/excalidraw/excalidraw](https://github.com/excalidraw/excalidraw) | Компонент интерактивного холста доски | 
+| [react](https://www.npmjs.com/package/react) | `^18.3.1` | MIT | [github.com/facebook/react](https://github.com/facebook/react) | UI-библиотека (зависимость Excalidraw и интерфейса) | 
+| [react-dom](https://www.npmjs.com/package/react-dom) | `^18.3.1` | MIT | [github.com/facebook/react](https://github.com/facebook/react) | Рендеринг React-компонентов в DOM | 
+| [@types/react](https://www.npmjs.com/package/@types/react) | `^18.3.12` | MIT | [github.com/DefinitelyTyped/DefinitelyTyped](https://github.com/DefinitelyTyped/DefinitelyTyped) | Типы TypeScript для React | 
+| [@types/react-dom](https://www.npmjs.com/package/@types/react-dom) | `^18.3.1` | MIT | [github.com/DefinitelyTyped/DefinitelyTyped](https://github.com/DefinitelyTyped/DefinitelyTyped) | Типы TypeScript для React DOM | 
+| [@vitejs/plugin-react](https://www.npmjs.com/package/@vitejs/plugin-react) | `^4.3.3` | MIT | [github.com/vitejs/vite-plugin-react](https://github.com/vitejs/vite-plugin-react) | Плагин сборки React для Vite | 
+| [vite](https://www.npmjs.com/package/vite) | `^5.4.10` | MIT | [github.com/vitejs/vite](https://github.com/vitejs/vite) | Сборщик и dev-сервер фронтенда | 
 
 ### Воркер (`worker/package.json`)
 
-| Пакет | Версия | Лицензия | Репозиторий / Источник | Назначение |
-| :--- | :--- | :--- | :--- | :--- |
-| [@cloudflare/workers-types](https://www.npmjs.com/package/@cloudflare/workers-types) | `^4.20261031.0` | BSD-3-Clause / Apache-2.0 | [github.com/cloudflare/workerd](https://github.com/cloudflare/workerd) | Определения типов среды выполнения Cloudflare Workers |
-| [wrangler](https://www.npmjs.com/package/wrangler) | `^4.33.0` | MIT OR Apache-2.0 | [github.com/cloudflare/workers-sdk](https://github.com/cloudflare/workers-sdk) | CLI для локальной разработки и деплоя Cloudflare Workers |
-
----
+| Пакет | Версия | Лицензия | Репозиторий / Источник | Назначение | 
+| ----- | ----- | ----- | ----- | ----- | 
+| [@cloudflare/workers-types](https://www.npmjs.com/package/@cloudflare/workers-types) | `^4.20261031.0` | BSD-3-Clause / Apache-2.0 | [github.com/cloudflare/workerd](https://github.com/cloudflare/workerd) | Определения типов среды выполнения Cloudflare Workers | 
+| [wrangler](https://www.npmjs.com/package/wrangler) | `^4.33.0` | MIT OR Apache-2.0 | [github.com/cloudflare/workers-sdk](https://github.com/cloudflare/workers-sdk) | CLI для локальной разработки и деплоя Cloudflare Workers | 
 
 ## Уведомление об авторских правах Excalidraw
 
-Источник: [https://github.com/excalidraw/excalidraw/blob/master/LICENSE](https://github.com/excalidraw/excalidraw/blob/master/LICENSE)
+Источник: <https://github.com/excalidraw/excalidraw/blob/master/LICENSE>
 
-```text
+```
 MIT License
 
 Copyright (c) 2020 Excalidraw
@@ -62,4 +60,5 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
 ```
