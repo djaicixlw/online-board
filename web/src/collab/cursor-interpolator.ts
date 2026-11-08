@@ -23,14 +23,29 @@ export function pickCollaboratorColor(clientId: string): string {
   return CURSOR_PALETTE[hash % CURSOR_PALETTE.length] ?? CURSOR_PALETTE[0];
 }
 
+export interface CursorStepResult {
+  cursors: InterpolatedCursor[];
+  changed: boolean;
+  expiredClientIds: string[];
+}
+
 /**
  * Smoothly interpolates remote collaborator cursor positions between network updates (10 Hz -> 60 FPS).
+ * Tracks dirty state so React only re-renders when a cursor actually moves, appears, or expires.
  */
 export class CursorInterpolator {
   private readonly cursors = new Map<string, InterpolatedCursor>();
+  private dirtySinceLastStep = false;
+  private readonly staleTimeoutMs: number;
+
+  constructor(staleTimeoutMs = CURSOR_STALE_TIMEOUT_MS) {
+    this.staleTimeoutMs = staleTimeoutMs;
+  }
 
   public updateTarget(target: RemoteCursorTarget, nowMs = Date.now()): InterpolatedCursor {
     const existing = this.cursors.get(target.client_id);
+    this.dirtySinceLastStep = true;
+
     if (!existing) {
       const created: InterpolatedCursor = {
         clientId: target.client_id,
@@ -62,21 +77,36 @@ export class CursorInterpolator {
   }
 
   /**
-   * Advances all remote cursors toward their target positions by `dtMs` milliseconds.
+   * Advances all remote cursors toward their target positions by `dtMs` milliseconds,
+   * returning whether any cursor visually changed or expired (preventing idle 60 FPS re-renders).
    */
-  public step(dtMs: number, nowMs = Date.now()): InterpolatedCursor[] {
+  public stepWithDiff(dtMs: number, nowMs = Date.now()): CursorStepResult {
+    if (this.cursors.size === 0 && !this.dirtySinceLastStep) {
+      return { cursors: [], changed: false, expiredClientIds: [] };
+    }
+
     const clampedDt = Math.max(0, Math.min(dtMs, 250));
     const alpha = clampedDt === 0 ? 0 : 1 - Math.exp(-clampedDt / SMOOTHING_TAU_MS);
 
+    let changed = this.dirtySinceLastStep;
+    this.dirtySinceLastStep = false;
+
     const result: InterpolatedCursor[] = [];
+    const expiredClientIds: string[] = [];
+
     for (const [clientId, cursor] of this.cursors.entries()) {
-      if (nowMs - cursor.updatedAt > CURSOR_STALE_TIMEOUT_MS) {
+      if (nowMs - cursor.updatedAt > this.staleTimeoutMs) {
         this.cursors.delete(clientId);
+        expiredClientIds.push(clientId);
+        changed = true;
         continue;
       }
 
+      const prevX = cursor.x;
+      const prevY = cursor.y;
       const dx = cursor.targetX - cursor.x;
       const dy = cursor.targetY - cursor.y;
+
       if (Math.hypot(dx, dy) <= SNAP_EPSILON_PX) {
         cursor.x = cursor.targetX;
         cursor.y = cursor.targetY;
@@ -84,13 +114,28 @@ export class CursorInterpolator {
         cursor.x += dx * alpha;
         cursor.y += dy * alpha;
       }
+
+      if (Math.abs(cursor.x - prevX) > 0.01 || Math.abs(cursor.y - prevY) > 0.01) {
+        changed = true;
+      }
+
       result.push({ ...cursor });
     }
-    return result;
+
+    return { cursors: result, changed, expiredClientIds };
+  }
+
+  /**
+   * Advances all remote cursors toward their target positions by `dtMs` milliseconds.
+   */
+  public step(dtMs: number, nowMs = Date.now()): InterpolatedCursor[] {
+    return this.stepWithDiff(dtMs, nowMs).cursors;
   }
 
   public removeCollaborator(clientId: string): void {
-    this.cursors.delete(clientId);
+    if (this.cursors.delete(clientId)) {
+      this.dirtySinceLastStep = true;
+    }
   }
 
   public getSnapshot(): InterpolatedCursor[] {
@@ -98,6 +143,9 @@ export class CursorInterpolator {
   }
 
   public clear(): void {
-    this.cursors.clear();
+    if (this.cursors.size > 0) {
+      this.cursors.clear();
+      this.dirtySinceLastStep = true;
+    }
   }
 }

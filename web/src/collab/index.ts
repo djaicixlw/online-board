@@ -2,6 +2,7 @@ export {
   BOARD_FULL_CLOSE_CODE,
   BoardCollabClient,
   CURSOR_SYNC_INTERVAL_MS,
+  MAX_SCENE_UPDATE_BATCH_BYTES,
   PING_INTERVAL_MS,
   RECONNECT_BACKOFF_MS,
   SCENE_SYNC_INTERVAL_MS,
@@ -13,8 +14,10 @@ export {
   CURSOR_STALE_TIMEOUT_MS,
   CursorInterpolator,
   pickCollaboratorColor,
+  type CursorStepResult,
 } from "./cursor-interpolator.js";
 export {
+  MAX_EXCALIDRAW_FILE_BYTES,
   parseExcalidrawDocument,
   serializeExcalidrawDocument,
   type ExcalidrawFileDocument,
@@ -31,6 +34,7 @@ export {
   type StorageLike,
 } from "./nick.js";
 export {
+  isValidFiniteElement,
   mergeSceneElements,
   shouldReplaceElement,
   VersionDiffTracker,

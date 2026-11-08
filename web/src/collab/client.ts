@@ -17,6 +17,9 @@ export const CURSOR_SYNC_INTERVAL_MS = 100; // 10 Hz max
 export const PING_INTERVAL_MS = 30_000; // 1 ping per 30s
 export const RECONNECT_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 15_000] as const;
 export const BOARD_FULL_CLOSE_CODE = 1013;
+export const MAX_SCENE_UPDATE_BATCH_BYTES = 900_000;
+
+const textEncoder = new TextEncoder();
 
 export interface WebSocketLike {
   readonly readyState: number;
@@ -63,11 +66,12 @@ function defaultWsBaseUrl(): string {
  * - Sends `hello {client_id, nick}` on connect; merges incoming `snapshot` via `reconcileElements`.
  * - Tracks per-element `version` diffs; batches `scene_update` at most 10 Hz (100 ms), sending
  *   intermediate updates while drawing and flushing the final state on pointer release.
- * - Throttles `cursor` updates to at most 10 Hz (100 ms) and only when coordinates change.
+ * - Shares a unified 10 Hz message budget between `scene_update` and `cursor` during active
+ *   drawing so a single client never exceeds 10 messages/second (SPEC.md section 8).
  * - Sends exact `'{"type":"ping"}'` string every 30 seconds.
  * - Reconnects with exponential backoff (1, 2, 4, 8, 15s); preserves local drawing while offline
  *   and reconciles + flushes pending changes upon reconnect.
- * - Switches status to `"full"` («Доска заполнена») and stops reconnecting on close code 1013.
+ * - Switches status to `"full"` ((board room full)) and stops reconnecting on close code 1013.
  */
 export class BoardCollabClient {
   private readonly boardId: string;
@@ -167,6 +171,27 @@ export class BoardCollabClient {
     this.onStatusChange?.(nextStatus);
   }
 
+  private clearPresenceOnDisconnect(): void {
+    if (this.collaborators.length > 0) {
+      this.collaborators = [];
+      this.onCollaboratorsChange?.([]);
+    }
+    this.cursorInterpolator.clear();
+    this.onRemoteCursorsChange?.([]);
+  }
+
+  public removeExpiredCollaborators(expiredClientIds: readonly string[]): void {
+    if (expiredClientIds.length === 0) {
+      return;
+    }
+    const expiredSet = new Set(expiredClientIds);
+    const next = this.collaborators.filter((c) => !expiredSet.has(c.client_id));
+    if (next.length !== this.collaborators.length) {
+      this.collaborators = next;
+      this.onCollaboratorsChange?.([...this.collaborators]);
+    }
+  }
+
   /**
    * Opens the WebSocket connection if a valid nickname is set.
    * Without a nickname, no connection is opened (Requirement 2).
@@ -222,6 +247,7 @@ export class BoardCollabClient {
       }
       this.ws = null;
       this.stopPingLoop();
+      this.clearPresenceOnDisconnect();
 
       if (this.manualDisconnect) {
         this.setStatus("idle");
@@ -247,7 +273,8 @@ export class BoardCollabClient {
 
   /**
    * Updates the user's nickname. If not yet connected, starts the connection;
-   * if already connected, sends an updated `hello` message with the new nickname.
+   * if already connected, sends an updated `hello` message over the existing open socket
+   * without dropping or recreating the WebSocket connection (fixing Review #1).
    */
   public setNick(newNick: string): boolean {
     const sanitized = sanitizeNickname(newNick);
@@ -279,6 +306,7 @@ export class BoardCollabClient {
     this.stopPingLoop();
     this.clearSceneBatchTimer();
     this.clearCursorThrottleTimer();
+    this.clearPresenceOnDisconnect();
     if (this.ws) {
       const activeWs = this.ws;
       this.ws = null;
@@ -364,14 +392,43 @@ export class BoardCollabClient {
       return;
     }
 
+    const nowMs = this.now();
     this.versionTracker.markSynced(changed);
-    this.lastSceneSentAt = this.now();
-    this.sendRaw(
-      JSON.stringify({
-        type: "scene_update",
-        elements: changed,
-      }),
-    );
+    this.lastSceneSentAt = nowMs;
+    // Share the 10 Hz window with cursor updates so active drawing does not send 20 msg/s (Review #6)
+    this.lastCursorSentAt = nowMs;
+    this.pendingCursor = null;
+    this.clearCursorThrottleTimer();
+
+    // Split oversized batches so each WebSocket message stays well under the 2 MiB DO limit (Review #10)
+    let currentBatch: ExcalidrawElementLike[] = [];
+    let currentBytes = 32;
+
+    for (const el of changed) {
+      const elBytes = textEncoder.encode(JSON.stringify(el)).byteLength + 1;
+      if (currentBatch.length > 0 && currentBytes + elBytes > MAX_SCENE_UPDATE_BATCH_BYTES) {
+        this.sendRaw(
+          JSON.stringify({
+            type: "scene_update",
+            elements: currentBatch,
+          }),
+        );
+        currentBatch = [el];
+        currentBytes = 32 + elBytes;
+      } else {
+        currentBatch.push(el);
+        currentBytes += elBytes;
+      }
+    }
+
+    if (currentBatch.length > 0) {
+      this.sendRaw(
+        JSON.stringify({
+          type: "scene_update",
+          elements: currentBatch,
+        }),
+      );
+    }
   }
 
   /**
@@ -397,6 +454,9 @@ export class BoardCollabClient {
       this.lastSentCursor.tool === tool &&
       this.lastSentCursor.pointer === pointer
     ) {
+      // Clear any stale intermediate pendingCursor if cursor returned to lastSentCursor within the window (Review #7)
+      this.pendingCursor = null;
+      this.clearCursorThrottleTimer();
       return;
     }
 
@@ -406,8 +466,14 @@ export class BoardCollabClient {
       return;
     }
 
+    // If a scene_update batch is already scheduled in the current 100 ms window, skip duplicate cursor packet (Review #6)
+    if (this.sceneBatchTimer !== null) {
+      return;
+    }
+
     const nowMs = this.now();
-    const elapsed = nowMs - this.lastCursorSentAt;
+    const lastActivityAt = Math.max(this.lastCursorSentAt, this.lastSceneSentAt);
+    const elapsed = nowMs - lastActivityAt;
 
     if (elapsed >= CURSOR_SYNC_INTERVAL_MS && this.cursorThrottleTimer === null) {
       this.flushCursorNow();
@@ -430,6 +496,10 @@ export class BoardCollabClient {
       !this.ws ||
       this.ws.readyState !== 1
     ) {
+      return;
+    }
+    if (this.sceneBatchTimer !== null) {
+      this.pendingCursor = null;
       return;
     }
     const cursor = this.pendingCursor;
@@ -479,9 +549,6 @@ export class BoardCollabClient {
       this.collaborators = collaborators;
       this.onCollaboratorsChange?.(collaborators);
 
-      // Record server baseline so any local elements edited while offline remain unsent
-      this.versionTracker.applyServerSnapshotBaseline(serverElements);
-
       const localElements = this.getLocalElements();
       const merged = mergeSceneElements(
         localElements,
@@ -489,6 +556,10 @@ export class BoardCollabClient {
         this.getLocalAppState(),
         this.reconcileElements,
       );
+
+      // Record server baseline only for elements that actually won in `merged`
+      // so any local elements edited while offline remain unsent
+      this.versionTracker.applyServerSnapshotBaseline(serverElements, merged);
 
       this.onRemoteSceneApplied(merged, collaborators);
 
@@ -509,9 +580,6 @@ export class BoardCollabClient {
         return;
       }
 
-      // Mark remote elements as synced so we do not re-broadcast them back
-      this.versionTracker.markSynced(remoteElements);
-
       const localElements = this.getLocalElements();
       const merged = mergeSceneElements(
         localElements,
@@ -519,6 +587,9 @@ export class BoardCollabClient {
         this.getLocalAppState(),
         this.reconcileElements,
       );
+
+      // Only mark remote elements as synced if they actually won in `merged` (Review #8)
+      this.versionTracker.markRemoteAppliedAfterMerge(remoteElements, merged);
 
       if (parsed.client_id && parsed.nick) {
         this.ensureCollaboratorPresent(parsed.client_id, parsed.nick);

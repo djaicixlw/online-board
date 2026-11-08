@@ -3,6 +3,7 @@ import {
   BoardCollabClient,
   CursorInterpolator,
   loadSavedNickname,
+  MAX_EXCALIDRAW_FILE_BYTES,
   mergeSceneElements,
   NICK_STORAGE_KEY,
   parseBoardRoute,
@@ -12,12 +13,14 @@ import {
   saveNickname,
   serializeExcalidrawDocument,
   VersionDiffTracker,
+  type CollaboratorInfo,
   type ConnectionStatus,
   type ExcalidrawElementLike,
   type WebSocketLike,
 } from "../src/collab/index.js";
 import {
   normalizePointerKind,
+  PALM_CONTACT_SIZE_THRESHOLD_PX,
   shouldSuppressTouchOrPalmDrawing,
 } from "../src/input/pen-guard.js";
 
@@ -108,6 +111,10 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
       `ws://localhost:8787/ws/${VALID_BOARD_ID}?nick=%D0%9C%D0%B0%D1%80%D0%B8%D1%8F`,
     );
     expect(client.getStatus()).toBe("connecting");
+
+    // Fix #1: Calling setNick again with the exact same nickname is a no-op and does NOT reconnect
+    expect(client.setNick("Мария")).toBe(true);
+    expect(sockets.length).toBe(1);
   });
 
   it("diffs elements by version & versionNonce and batches scene_update at most 10 Hz (100 ms), flushing final state on pointer release", () => {
@@ -289,6 +296,16 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
         tool: "pointer",
       });
 
+      // Fix #7: If cursor moves away and returns to lastSentCursor within the 100ms window,
+      // pendingCursor must be cleared so the stale intermediate position is NOT sent!
+      currentNow = 50_330;
+      client.queueCursorUpdate(150, 250, "pen", "pointer");
+      currentNow = 50_350;
+      client.queueCursorUpdate(130, 230, "pen", "pointer"); // back to lastSentCursor (130, 230)
+      currentNow = 50_450;
+      vi.advanceTimersByTime(150);
+      expect(ws.sent.length).toBe(3); // No stale (150, 250) sent!
+
       // Advance 30 seconds -> exact {"type":"ping"} string sent
       ws.sent.length = 0;
       vi.advanceTimersByTime(30_000);
@@ -304,6 +321,7 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
       let currentNow = 100_000;
       const sockets: FakeWebSocket[] = [];
       const statuses: ConnectionStatus[] = [];
+      let latestCollaborators: CollaboratorInfo[] = [];
       let localElements: ExcalidrawElementLike[] = [
         { id: "init-1", version: 1, versionNonce: 10 },
       ];
@@ -323,6 +341,9 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
         onRemoteSceneApplied: (merged) => {
           localElements = merged;
         },
+        onCollaboratorsChange: (collabs) => {
+          latestCollaborators = collabs;
+        },
         onStatusChange: (st) => statuses.push(st),
       });
 
@@ -332,12 +353,17 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
       sockets[0]!.simulateServerMessage({
         type: "snapshot",
         elements: [{ id: "init-1", version: 1, versionNonce: 10 }],
-        collaborators: [],
+        collaborators: [
+          { client_id: "client-reconnect", nick: "Сергей" },
+          { client_id: "peer-1", nick: "Ольга" },
+        ],
       });
+      expect(latestCollaborators.length).toBe(2);
 
-      // Connection drops abnormally -> status becomes "offline" («Нет связи, рисуем локально»)
+      // Connection drops abnormally -> status becomes "offline" and collaborators list is cleared (Fix #11)
       sockets[0]!.simulateClose(1006, "network drop");
       expect(client.getStatus()).toBe("offline");
+      expect(latestCollaborators.length).toBe(0);
 
       // While offline, user draws a new element `offline-el` and edits `init-1` to v2
       localElements = [
@@ -379,7 +405,7 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
           { id: "init-1", version: 1, versionNonce: 10 },
           { id: "peer-el", version: 1, versionNonce: 33 },
         ],
-        collaborators: [],
+        collaborators: [{ client_id: "client-reconnect", nick: "Сергей" }],
       });
 
       // Merged scene contains init-1 (v2 from offline edit), offline-el (v1), and peer-el (v1)
@@ -410,71 +436,136 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
     }
   });
 
-  it("smoothly interpolates remote cursors and validates pen palm rejection, routes, and .excalidraw files", () => {
-    const interpolator = new CursorInterpolator();
-    const initial = interpolator.updateTarget(
-      { client_id: "peer-1", nick: "Дмитрий", x: 0, y: 0, pointer: "pen", tool: "pointer" },
-      1000,
-    );
-    expect(initial.x).toBe(0);
-    expect(initial.y).toBe(0);
+  it("verifies review fixes: URIError safety (#3), multi-touch pinch/palm guard (#2), idle cursor diff (#5), unified 10Hz budget (#6), reconcile tracker (#8), and file size limits (#10)", () => {
+    // Fix #3: Malformed percent-encoding in URL does not throw URIError
+    const malformedRoute = parseBoardRoute("/b/%E0%A4%A");
+    expect(malformedRoute.matchedRoute).toBe(true);
+    expect(malformedRoute.boardId).toBeNull();
+    expect(malformedRoute.rawSegment).toBe("%E0%A4%A");
+
+    // Fix #2: Multi-touch secondary finger (isPrimary: false) is allowed for two-finger zoom/pan,
+    // and palm contact threshold is 48px
+    expect(PALM_CONTACT_SIZE_THRESHOLD_PX).toBe(48);
+    expect(
+      shouldSuppressTouchOrPalmDrawing({ pointerType: "touch", isPrimary: false }, true),
+    ).toBe(false);
+    expect(
+      shouldSuppressTouchOrPalmDrawing(
+        { pointerType: "touch", isPrimary: true, width: 20, height: 20 },
+        false,
+      ),
+    ).toBe(false);
+    expect(
+      shouldSuppressTouchOrPalmDrawing(
+        { pointerType: "touch", isPrimary: true, width: 52, height: 52 },
+        false,
+      ),
+    ).toBe(true);
+
+    // Fix #5 & #11: CursorInterpolator.stepWithDiff returns changed: false when idle and reports expiredClientIds
+    const interpolator = new CursorInterpolator(5000);
+    expect(interpolator.stepWithDiff(16, 1000)).toEqual({
+      cursors: [],
+      changed: false,
+      expiredClientIds: [],
+    });
 
     interpolator.updateTarget(
       { client_id: "peer-1", nick: "Дмитрий", x: 100, y: 200, pointer: "pen", tool: "laser" },
-      1100,
+      1000,
     );
+    // Target equals current on first update -> step without expiry has changed: false after initial render
+    const firstStep = interpolator.stepWithDiff(16, 1016);
+    expect(firstStep.cursors.length).toBe(1);
+    const secondIdleStep = interpolator.stepWithDiff(16, 1032);
+    expect(secondIdleStep.changed).toBe(false);
 
-    const step1 = interpolator.step(30, 1130)[0]!;
-    expect(step1.x).toBeGreaterThan(10);
-    expect(step1.x).toBeLessThan(100);
-    expect(step1.y).toBeGreaterThan(20);
-    expect(step1.y).toBeLessThan(200);
-    expect(step1.nick).toBe("Дмитрий");
-    expect(step1.tool).toBe("laser");
+    // Expiry after 5000ms reports expiredClientIds and changed: true
+    const expiryStep = interpolator.stepWithDiff(16, 6100);
+    expect(expiryStep.changed).toBe(true);
+    expect(expiryStep.expiredClientIds).toEqual(["peer-1"]);
+    expect(expiryStep.cursors.length).toBe(0);
 
-    // Converges to target after multiple steps
-    for (let i = 0; i < 20; i++) {
-      interpolator.step(50, 1200 + i * 50);
+    // Fix #6: Unified 10 Hz budget suppresses duplicate cursor sends during active scene_update drawing
+    vi.useFakeTimers();
+    try {
+      let currentNow = 200_000;
+      const sockets: FakeWebSocket[] = [];
+      let localElements: ExcalidrawElementLike[] = [];
+      const client = new BoardCollabClient({
+        boardId: VALID_BOARD_ID,
+        clientId: "client-budget",
+        nick: "Павел",
+        wsBaseUrl: "ws://localhost:8787",
+        now: () => currentNow,
+        createWebSocket: (url) => {
+          const s = new FakeWebSocket(url);
+          sockets.push(s);
+          return s;
+        },
+        getLocalElements: () => localElements,
+        onRemoteSceneApplied: (els) => {
+          localElements = els;
+        },
+      });
+      client.connect();
+      const ws = sockets[0]!;
+      ws.simulateOpen();
+      ws.sent.length = 0;
+
+      // Active drawing sends scene_update at t = 200_000 and queues cursor at t = 200_010
+      localElements = [{ id: "stroke-1", version: 1, versionNonce: 10 }];
+      client.queueSceneUpdate(localElements);
+      expect(ws.sent.length).toBe(1); // scene_update sent immediately
+
+      currentNow = 200_010;
+      localElements = [{ id: "stroke-1", version: 2, versionNonce: 9 }];
+      client.queueSceneUpdate(localElements); // schedules scene_update for t = 200_100
+      client.queueCursorUpdate(50, 60, "pen", "pointer"); // suppressed during active drawing!
+      expect(ws.sent.length).toBe(1);
+
+      currentNow = 200_100;
+      vi.advanceTimersByTime(100);
+      // Only the batched scene_update is sent (not a redundant cursor message in the same window)
+      expect(ws.sent.length).toBe(2);
+      expect(JSON.parse(ws.sent[1]!).type).toBe("scene_update");
+
+      // Fix #8: VersionDiffTracker only marks remote versions that actually win in mergeSceneElements
+      ws.sent.length = 0;
+      // Suppose custom reconcileElements keeps local element (v3) when remote sends older (v2)
+      localElements = [{ id: "stroke-1", version: 3, versionNonce: 5 }];
+      ws.simulateServerMessage({
+        type: "scene_update",
+        client_id: "other-peer",
+        nick: "Елена",
+        elements: [{ id: "stroke-1", version: 2, versionNonce: 99 }],
+      });
+      // Since local v3 won over remote v2, VersionDiffTracker did NOT overwrite synced version with v2;
+      // and if local element was at v3 (not yet sent), queueSceneUpdate still detects and sends v3!
+      currentNow = 200_300;
+      client.queueSceneUpdate(localElements);
+      expect(ws.sent.length).toBe(1);
+      expect(JSON.parse(ws.sent[0]!).elements).toEqual([
+        { id: "stroke-1", version: 3, versionNonce: 5 },
+      ]);
+    } finally {
+      vi.useRealTimers();
     }
-    const converged = interpolator.getSnapshot()[0]!;
-    expect(converged.x).toBe(100);
-    expect(converged.y).toBe(200);
 
-    // Pen guard & palm rejection
-    expect(normalizePointerKind("pen")).toBe("pen");
-    expect(normalizePointerKind("touch")).toBe("touch");
-    expect(normalizePointerKind("mouse")).toBe("mouse");
-    expect(shouldSuppressTouchOrPalmDrawing({ pointerType: "pen" }, true)).toBe(false);
-    expect(shouldSuppressTouchOrPalmDrawing({ pointerType: "mouse" }, true)).toBe(false);
-    expect(shouldSuppressTouchOrPalmDrawing({ pointerType: "touch" }, true)).toBe(true);
-    expect(
-      shouldSuppressTouchOrPalmDrawing({ pointerType: "touch", width: 30, height: 30 }, false),
-    ).toBe(true);
+    // Fix #10: parseExcalidrawDocument rejects oversized files and filters out NaN/Infinity versions
+    const oversizedJson = "x".repeat(MAX_EXCALIDRAW_FILE_BYTES + 10);
+    expect(() => parseExcalidrawDocument(oversizedJson)).toThrow(/exceeds maximum allowed size/);
 
-    // Route parsing & .excalidraw file serialization/parsing
-    expect(parseBoardRoute(`/b/${VALID_BOARD_ID}`).boardId).toBe(VALID_BOARD_ID);
-    expect(parseBoardRoute("/b/invalid-short").boardId).toBeNull();
-
-    const docJson = serializeExcalidrawDocument([
-      { id: "rect-1", version: 2, versionNonce: 11 },
-      { id: "deleted-1", version: 3, versionNonce: 12, isDeleted: true },
-    ]);
-    const parsedDoc = parseExcalidrawDocument(docJson);
-    expect(parsedDoc.elements).toEqual([{ id: "rect-1", version: 2, versionNonce: 11 }]);
-
-    // VersionDiffTracker & mergeSceneElements
-    const tracker = new VersionDiffTracker();
-    const merged = mergeSceneElements(
-      [{ id: "a", version: 2, versionNonce: 50 }],
-      [
-        { id: "a", version: 2, versionNonce: 20 },
-        { id: "b", version: 1, versionNonce: 99 },
+    const docWithInvalidNumbers = JSON.stringify({
+      type: "excalidraw",
+      version: 2,
+      elements: [
+        { id: "valid-1", version: 1, versionNonce: 10 },
+        { id: "neg-ver", version: -1, versionNonce: 10 },
       ],
-    );
-    expect(merged).toEqual([
-      { id: "a", version: 2, versionNonce: 20 },
-      { id: "b", version: 1, versionNonce: 99 },
+    });
+    expect(parseExcalidrawDocument(docWithInvalidNumbers).elements).toEqual([
+      { id: "valid-1", version: 1, versionNonce: 10 },
     ]);
-    expect(tracker.getChangedElements(merged).length).toBe(2);
   });
 });

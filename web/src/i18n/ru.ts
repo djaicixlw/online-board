@@ -1,46 +1,36 @@
 /**
- * Russian UI strings and locale configuration.
- * Per AGENTS.md, all user-facing Russian strings live in `web/src/i18n/ru.ts`.
+ * Russian UI string dictionary (`ru-RU`).
+ * All custom user-facing interface strings live here (AGENTS.md).
  */
-export const RU_LOCALE_CODE = "ru-RU" as const;
-
-export const RU_STRINGS = {
+export const RU = {
+  langCode: "ru-RU",
   appTitle: "Онлайн-доска для уроков",
-  canvasAriaLabel: "Холст онлайн-доски для урока",
-  rootElementMissingError: "Корневой элемент #root не найден в DOM",
+  loadingCanvas: "Загрузка холста…",
 
-  // Маршрутизация /b/:id
-  invalidBoardUrlTitle: "Некорректный адрес доски",
-  invalidBoardUrlDescription:
-    "Ссылка на доску должна иметь формат /b/<22 символа латиницы и цифр (base62)>.",
-  createNewLocalBoardButton: "Открыть новую доску",
-
-  // Диалог ввода и смены ника (ключ localStorage: board.nick)
+  // Nickname onboarding and editing dialog
   nickDialogTitle: "Как вас зовут на доске?",
-  nickDialogSubtitle: "Введите ник (от 1 до 32 символов). Он запомнится в этом браузере.",
-  nickInputLabel: "Ваш ник на доске",
-  nickInputPlaceholder: "Например, Алексей",
-  nickSubmitButton: "Продолжить",
+  nickDialogHint: "Имя увидят другие участники рядом с вашим курсором (от 1 до 32 символов).",
+  nickInputPlaceholder: "Например: Анна или Учитель",
+  nickSubmitButton: "Войти на доску",
+  nickSaveButton: "Сохранить",
   nickCancelButton: "Отмена",
-  nickValidationError: "Введите ник длиной от 1 до 32 символов (без управляющих спецсимволов).",
-  changeNickButtonPrefix: "Ник:",
-  changeNickButtonAriaLabel: "Сменить ник на доске",
+  nickChangeButtonLabel: "Сменить имя",
+  nickValidationError: "Введите имя длиной от 1 до 32 символов.",
 
-  // Плашка состояния соединения
+  // Connection status banner
   statusConnecting: "Подключение…",
-  statusConnected: "На связи",
-  statusOffline: "Нет связи, рисуем локально",
-  statusBoardFull: "Доска заполнена",
+  statusOfflineLocal: "Нет связи, рисуем локально",
+  statusRoomFull: "Доска заполнена",
+  statusConnectedPrefix: "Онлайн",
 
-  // Ввод и режим пера (стилуса)
-  penModeActiveLabel: "Режим пера: вкл",
-  penModeAutoLabel: "Режим пера: авто",
-  penModeToggleTitle:
-    "В режиме пера касания ладонью и пальцем не рисуют на холсте (работают только стилус и мышь)",
+  // Scene file (.excalidraw) export and import actions
+  saveSceneFileButton: "Сохранить .excalidraw",
+  openSceneFileButton: "Открыть .excalidraw",
+  openSceneFileError: "Не удалось прочитать файл .excalidraw. Проверьте формат файла.",
 
-  // Экспорт и работа с файлами .excalidraw
-  saveExcalidrawFileButton: "Сохранить .excalidraw",
-  openExcalidrawFileButton: "Открыть .excalidraw",
-  fileImportError: "Не удалось прочитать файл .excalidraw: проверьте формат JSON.",
-  collaboratorsCountPrefix: "Участников:",
+  // Invalid board URL screen
+  invalidBoardTitle: "Некорректный адрес доски",
+  invalidBoardDescription:
+    "Ссылка на доску должна иметь вид /b/<22 символа base62>. Проверьте ссылку у преподавателя или откройте демонстрационную доску.",
+  openDemoBoardButton: "Открыть демо-доску",
 } as const;

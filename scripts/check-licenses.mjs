@@ -294,7 +294,7 @@ export function main() {
     const lockJson = JSON.parse(readFileSync(lockfilePath, "utf8"));
     if (lockJson.packages && typeof lockJson.packages === "object") {
       for (const [pkgLoc, meta] of Object.entries(lockJson.packages)) {
-        if (!pkgLoc || !pkgLoc.includes("node_modules/")) {
+        if (!pkgLoc || !pkgLoc.includes("node_modules/") || meta.link === true) {
           continue;
         }
         const parts = pkgLoc.split("node_modules/");

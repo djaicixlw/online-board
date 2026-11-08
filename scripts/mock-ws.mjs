@@ -1,256 +1,228 @@
-import { createServer } from "node:http";
-import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+#!/usr/bin/env node
+/**
+ * Local WebSocket mock server (`scripts/mock-ws.mjs`) for developing and testing T2
+ * independently or alongside T1.
+ *
+ * Implements the server-side protocol from SPEC.md (section 6):
+ * - Route: GET /ws/:id?nick=<nick>
+ * - Validates board id (22 base62 chars) and nick (1..32 chars)
+ * - Replies `{"type":"pong"}` to exact string `{"type":"ping"}`
+ * - Accepts `hello`, replies with `snapshot { elements, collaborators }`
+ * - Merges `scene_update` by `(version, versionNonce)` and broadcasts to other peers in the room
+ * - Broadcasts `cursor` to other peers in the room with sender `client_id` and `nick`
+ */
 
-const currentDir = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(currentDir, "..");
+import http from "node:http";
+import { WebSocketServer, WebSocket } from "ws";
 
-function loadWsModule() {
-  try {
-    const localReq = createRequire(resolve(repoRoot, "package.json"));
-    return localReq("ws");
-  } catch {
-    const sysReq = createRequire("/usr/share/nodejs/");
-    return sysReq("ws");
-  }
-}
-
-const WsPkg = loadWsModule();
-const WebSocketServer = WsPkg.WebSocketServer || WsPkg.Server;
-
-const BOARD_ID_REGEX = /^[0-9A-Za-z]{22}$/;
-// eslint-disable-next-line no-control-regex
-const CONTROL_CHARS_REGEX = /[\u0000-\u001F\u007F-\u009F]+/g;
-const MAX_CONNECTIONS_PER_BOARD = 20;
-
-export function sanitizeMockNick(raw) {
-  if (typeof raw !== "string") {
-    return null;
-  }
-  const cleaned = raw.replace(CONTROL_CHARS_REGEX, "").trim();
-  const len = Array.from(cleaned).length;
-  return len >= 1 && len <= 32 ? cleaned : null;
-}
-
-export function shouldReplaceMockElement(existing, incoming) {
-  if (!existing) {
-    return true;
-  }
-  if (incoming.version > existing.version) {
-    return true;
-  }
-  if (incoming.version === existing.version && incoming.versionNonce < existing.versionNonce) {
-    return true;
-  }
-  return false;
-}
+const PORT = Number(process.env.MOCK_WS_PORT ?? 8788);
+const MAX_CLIENTS_PER_BOARD = Number(process.env.MAX_CLIENTS_PER_BOARD ?? 25);
+const MAX_WS_PAYLOAD_BYTES = 2 * 1024 * 1024; // 2 MB limit (Fix #10)
+const BASE62_BOARD_ID_RE = /^[0-9A-Za-z]{22}$/;
+const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F-\u009F]/g;
 
 /**
- * Starts the mock WebSocket collaboration server for Task T2 development and testing.
- * Implements SPEC.md section 6 protocol: hello -> snapshot, scene_update broadcast, cursor broadcast, ping -> pong.
+ * Map: boardId -> {
+ *   elements: Map<string, object>,
+ *   clients: Map<WebSocket, { client_id: string, nick: string }>
+ * }
  */
-export async function startMockWsServer(options = {}) {
-  const port = options.port ?? Number.parseInt(process.env.MOCK_WS_PORT || "8787", 10);
-  const host = options.host ?? "127.0.0.1";
-  const maxConnections = options.maxConnections ?? MAX_CONNECTIONS_PER_BOARD;
+const rooms = new Map();
 
-  // Map: boardId -> { elements: Map<id, element>, clients: Map<ws, { clientId, nick }> }
-  const rooms = new Map();
+function getOrCreateRoom(boardId) {
+  let room = rooms.get(boardId);
+  if (!room) {
+    room = {
+      elements: new Map(),
+      clients: new Map(),
+    };
+    rooms.set(boardId, room);
+  }
+  return room;
+}
 
-  function getOrCreateRoom(boardId) {
-    let room = rooms.get(boardId);
-    if (!room) {
-      room = {
-        elements: new Map(),
-        clients: new Map(),
-      };
-      rooms.set(boardId, room);
-    }
-    return room;
+function sanitizeNick(raw) {
+  if (typeof raw !== "string") return null;
+  const cleaned = raw.replace(CONTROL_CHARS_RE, "").trim();
+  const len = Array.from(cleaned).length;
+  if (len < 1 || len > 32) return null;
+  return cleaned;
+}
+
+function shouldReplaceElement(existing, incoming) {
+  if (!existing) return true;
+  if (incoming.version > existing.version) return true;
+  if (incoming.version < existing.version) return false;
+  return incoming.versionNonce < existing.versionNonce;
+}
+
+const server = http.createServer((req, res) => {
+  if (req.method === "GET" && req.url === "/api/health") {
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ ok: true, mock: true }));
+    return;
+  }
+  res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify({ ok: false, error: "Not Found" }));
+});
+
+const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD_BYTES });
+
+server.on("upgrade", (req, socket, head) => {
+  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+  const match = /^\/ws\/([^/]+)$/.exec(url.pathname);
+  if (!match) {
+    socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+    socket.destroy();
+    return;
   }
 
-  const httpServer = createServer((req, res) => {
-    if (req.url === "/api/health") {
-      res.writeHead(200, {
-        "Content-Type": "application/json; charset=utf-8",
-        "Cache-Control": "no-store",
-      });
-      res.end(JSON.stringify({ ok: true, version: "0.1.0" }));
-      return;
-    }
-    res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ ok: false, error: "Not Found" }));
-  });
+  let boardId = "";
+  try {
+    boardId = decodeURIComponent(match[1]);
+  } catch {
+    socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+    socket.destroy();
+    return;
+  }
 
-  const wss = new WebSocketServer({ noServer: true });
+  const nick = sanitizeNick(url.searchParams.get("nick"));
+  if (!BASE62_BOARD_ID_RE.test(boardId) || !nick) {
+    socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+    socket.destroy();
+    return;
+  }
 
-  httpServer.on("upgrade", (req, socket, head) => {
-    const reqUrl = new URL(req.url || "/", `http://${host}:${port}`);
-    const match = /^\/ws\/([^/]+)$/.exec(reqUrl.pathname);
-    const boardId = match?.[1] ?? "";
-    const nick = sanitizeMockNick(reqUrl.searchParams.get("nick"));
-    const simulateFull = reqUrl.searchParams.get("simulate_full") === "1";
-
-    if (!BOARD_ID_REGEX.test(boardId) || !nick) {
-      socket.write("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\r\n{\"ok\":false}");
-      socket.destroy();
-      return;
-    }
-
-    const room = getOrCreateRoom(boardId);
-
+  const room = getOrCreateRoom(boardId);
+  if (room.clients.size >= MAX_CLIENTS_PER_BOARD) {
     wss.handleUpgrade(req, socket, head, (ws) => {
-      if (simulateFull || room.clients.size >= maxConnections) {
-        ws.close(1013, "Board connection limit reached (max 20)");
+      ws.close(1013, "Board room is full");
+    });
+    return;
+  }
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    const attachment = {
+      client_id: `anon-${Math.random().toString(36).slice(2, 10)}`,
+      nick,
+    };
+    room.clients.set(ws, attachment);
+
+    ws.on("message", (rawData, isBinary) => {
+      if (isBinary) return;
+      const text = rawData.toString("utf-8");
+
+      if (text === '{"type":"ping"}') {
+        ws.send('{"type":"pong"}');
         return;
       }
 
-      const clientMeta = {
-        clientId: null,
-        nick,
-      };
-      room.clients.set(ws, clientMeta);
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        console.warn("[mock-ws] Invalid JSON ignored");
+        return;
+      }
 
-      ws.on("message", (rawData) => {
-        const text = typeof rawData === "string" ? rawData : rawData.toString("utf8");
-        if (text === '{"type":"ping"}') {
-          ws.send('{"type":"pong"}');
-          return;
-        }
+      if (!parsed || typeof parsed !== "object") return;
 
-        let msg;
-        try {
-          msg = JSON.parse(text);
-        } catch {
-          return;
-        }
-        if (!msg || typeof msg !== "object" || typeof msg.type !== "string") {
-          return;
-        }
+      if (parsed.type === "ping") {
+        ws.send('{"type":"pong"}');
+        return;
+      }
 
-        if (msg.type === "ping") {
-          ws.send('{"type":"pong"}');
-          return;
+      if (parsed.type === "hello") {
+        if (typeof parsed.client_id === "string" && parsed.client_id.trim()) {
+          attachment.client_id = parsed.client_id.trim().slice(0, 64);
         }
+        const updatedNick = sanitizeNick(parsed.nick);
+        if (updatedNick) {
+          attachment.nick = updatedNick;
+        }
+        room.clients.set(ws, attachment);
 
-        if (msg.type === "hello") {
-          if (typeof msg.client_id === "string" && msg.client_id.trim()) {
-            clientMeta.clientId = msg.client_id.trim();
-          }
-          if (typeof msg.nick === "string") {
-            const updatedNick = sanitizeMockNick(msg.nick);
-            if (updatedNick) {
-              clientMeta.nick = updatedNick;
+        ws.send(
+          JSON.stringify({
+            type: "snapshot",
+            elements: Array.from(room.elements.values()),
+            collaborators: Array.from(room.clients.values()),
+          })
+        );
+        return;
+      }
+
+      if (parsed.type === "scene_update" && Array.isArray(parsed.elements)) {
+        const updated = [];
+        for (const el of parsed.elements) {
+          if (
+            el &&
+            typeof el === "object" &&
+            typeof el.id === "string" &&
+            typeof el.version === "number" &&
+            Number.isFinite(el.version) &&
+            el.version >= 0 &&
+            typeof el.versionNonce === "number" &&
+            Number.isFinite(el.versionNonce)
+          ) {
+            const current = room.elements.get(el.id);
+            if (shouldReplaceElement(current, el)) {
+              room.elements.set(el.id, el);
             }
-          }
-
-          const collaborators = [];
-          for (const peerMeta of room.clients.values()) {
-            if (peerMeta.clientId) {
-              collaborators.push({
-                client_id: peerMeta.clientId,
-                nick: peerMeta.nick,
-              });
-            }
-          }
-
-          ws.send(
-            JSON.stringify({
-              type: "snapshot",
-              elements: Array.from(room.elements.values()),
-              collaborators,
-            }),
-          );
-          return;
-        }
-
-        if (msg.type === "scene_update" && Array.isArray(msg.elements)) {
-          const accepted = [];
-          for (const el of msg.elements) {
-            if (
-              el &&
-              typeof el === "object" &&
-              typeof el.id === "string" &&
-              typeof el.version === "number" &&
-              typeof el.versionNonce === "number"
-            ) {
-              const existing = room.elements.get(el.id);
-              if (shouldReplaceMockElement(existing, el)) {
-                room.elements.set(el.id, el);
-                accepted.push(el);
-              }
-            }
-          }
-
-          const outbound = JSON.stringify({
-            type: "scene_update",
-            client_id: clientMeta.clientId ?? "anonymous",
-            nick: clientMeta.nick,
-            elements: accepted.length > 0 ? accepted : msg.elements,
-          });
-
-          for (const peerWs of room.clients.keys()) {
-            if (peerWs !== ws && peerWs.readyState === peerWs.OPEN) {
-              peerWs.send(outbound);
-            }
-          }
-          return;
-        }
-
-        if (
-          msg.type === "cursor" &&
-          typeof msg.x === "number" &&
-          typeof msg.y === "number"
-        ) {
-          const outbound = JSON.stringify({
-            type: "cursor",
-            client_id: clientMeta.clientId ?? "anonymous",
-            nick: clientMeta.nick,
-            x: msg.x,
-            y: msg.y,
-            ...(msg.pointer !== undefined ? { pointer: msg.pointer } : {}),
-            ...(msg.tool !== undefined ? { tool: msg.tool } : {}),
-          });
-
-          for (const peerWs of room.clients.keys()) {
-            if (peerWs !== ws && peerWs.readyState === peerWs.OPEN) {
-              peerWs.send(outbound);
-            }
+            updated.push(el);
           }
         }
-      });
+        if (updated.length === 0) return;
 
-      ws.on("close", () => {
-        room.clients.delete(ws);
-      });
+        const payload = JSON.stringify({
+          type: "scene_update",
+          client_id: attachment.client_id,
+          nick: attachment.nick,
+          elements: updated,
+        });
+
+        for (const peer of room.clients.keys()) {
+          if (peer !== ws && peer.readyState === WebSocket.OPEN) {
+            peer.send(payload);
+          }
+        }
+        return;
+      }
+
+      if (
+        parsed.type === "cursor" &&
+        typeof parsed.x === "number" &&
+        Number.isFinite(parsed.x) &&
+        typeof parsed.y === "number" &&
+        Number.isFinite(parsed.y)
+      ) {
+        const payload = JSON.stringify({
+          type: "cursor",
+          client_id: attachment.client_id,
+          nick: attachment.nick,
+          x: parsed.x,
+          y: parsed.y,
+          pointer: parsed.pointer === "pen" || parsed.pointer === "laser" ? parsed.pointer : "mouse",
+          tool: typeof parsed.tool === "string" ? parsed.tool.slice(0, 32) : "selection",
+        });
+
+        for (const peer of room.clients.keys()) {
+          if (peer !== ws && peer.readyState === WebSocket.OPEN) {
+            peer.send(payload);
+          }
+        }
+      }
+    });
+
+    ws.on("close", () => {
+      room.clients.delete(ws);
+      if (room.clients.size === 0) {
+        rooms.delete(boardId);
+      }
     });
   });
+});
 
-  await new Promise((resolveListen) => httpServer.listen(port, host, resolveListen));
-  const addr = httpServer.address();
-  const actualPort = typeof addr === "object" && addr ? addr.port : port;
-
-  return {
-    port: actualPort,
-    host,
-    wsBaseUrl: `ws://${host}:${actualPort}`,
-    httpBaseUrl: `http://${host}:${actualPort}`,
-    rooms,
-    close: () =>
-      new Promise((resolveClose) => {
-        for (const room of rooms.values()) {
-          for (const ws of room.clients.keys()) {
-            ws.terminate();
-          }
-        }
-        wss.close(() => httpServer.close(resolveClose));
-      }),
-  };
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  startMockWsServer().then((srv) => {
-    console.log(`[mock-ws] Мок-сервер WebSocket запущен на ${srv.wsBaseUrl} (HTTP: ${srv.httpBaseUrl}/api/health)`);
-  });
-}
+server.listen(PORT, () => {
+  console.log(`[mock-ws] Listening on ws://localhost:${PORT}/ws/:id?nick=...`);
+});

@@ -1,4 +1,13 @@
+import { isValidFiniteElement } from "./reconcile.js";
 import type { ExcalidrawElementLike } from "./types.js";
+
+/**
+ * Maximum allowed `.excalidraw` file size on import (1.8 MiB) so scene updates fit within
+ * the 2 MiB WebSocket message limit (SPEC.md sections 3 and 10).
+ */
+export const MAX_EXCALIDRAW_FILE_BYTES = 1_800_000;
+
+const textEncoder = new TextEncoder();
 
 export interface ExcalidrawFileDocument {
   type: "excalidraw";
@@ -25,7 +34,7 @@ export function serializeExcalidrawDocument(
     type: "excalidraw",
     version: 2,
     source: sourceOrigin,
-    elements: elements.filter((el) => el.isDeleted !== true),
+    elements: elements.filter((el) => isValidFiniteElement(el) && el.isDeleted !== true),
     appState: {
       gridSize: null,
       viewBackgroundColor,
@@ -38,11 +47,19 @@ export function serializeExcalidrawDocument(
 
 /**
  * Parses and validates an imported `.excalidraw` JSON file string.
+ * Enforces `MAX_EXCALIDRAW_FILE_BYTES` and `Number.isFinite` on element versions.
  */
 export function parseExcalidrawDocument(rawJson: string): {
   elements: ExcalidrawElementLike[];
   viewBackgroundColor?: string;
 } {
+  const byteLength = textEncoder.encode(rawJson).byteLength;
+  if (byteLength > MAX_EXCALIDRAW_FILE_BYTES) {
+    throw new Error(
+      `File exceeds maximum allowed size (${MAX_EXCALIDRAW_FILE_BYTES} bytes)`,
+    );
+  }
+
   const parsed = JSON.parse(rawJson) as Record<string, unknown>;
   if (!parsed || typeof parsed !== "object" || parsed.type !== "excalidraw") {
     throw new Error("Invalid .excalidraw file header");
@@ -52,14 +69,8 @@ export function parseExcalidrawDocument(rawJson: string): {
   }
   const validElements: ExcalidrawElementLike[] = [];
   for (const item of parsed.elements) {
-    if (
-      item &&
-      typeof item === "object" &&
-      typeof (item as Record<string, unknown>).id === "string" &&
-      typeof (item as Record<string, unknown>).version === "number" &&
-      typeof (item as Record<string, unknown>).versionNonce === "number"
-    ) {
-      validElements.push(item as ExcalidrawElementLike);
+    if (isValidFiniteElement(item)) {
+      validElements.push(item);
     }
   }
   const appState = parsed.appState as Record<string, unknown> | undefined;

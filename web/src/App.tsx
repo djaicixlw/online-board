@@ -10,6 +10,7 @@ import {
   generateBoardId,
   getOrCreateClientId,
   loadSavedNickname,
+  MAX_EXCALIDRAW_FILE_BYTES,
   mergeSceneElements,
   parseBoardRoute,
   parseExcalidrawDocument,
@@ -87,6 +88,7 @@ export function App() {
   const boardId = routeState.boardId;
 
   const [savedNick, setSavedNick] = useState<string | null>(() => loadSavedNickname());
+  const initialNickRef = useRef<string | null>(savedNick);
   const [isNickDialogOpen, setIsNickDialogOpen] = useState<boolean>(
     () => loadSavedNickname() === null,
   );
@@ -96,6 +98,7 @@ export function App() {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("idle");
   const [collaborators, setCollaborators] = useState<CollaboratorInfo[]>([]);
   const [remoteCursors, setRemoteCursors] = useState<InterpolatedCursor[]>([]);
+  const [sceneElementCount, setSceneElementCount] = useState<number>(0);
   const [penMode, setPenMode] = useState<boolean>(true);
   const [importError, setImportError] = useState<string | null>(null);
 
@@ -121,6 +124,9 @@ export function App() {
       nextCollaborators?: CollaboratorInfo[],
     ) => {
       latestElementsRef.current = mergedElements;
+      setSceneElementCount(
+        mergedElements.filter((el) => el.isDeleted !== true).length,
+      );
       const api = excalidrawApiRef.current;
       if (!api) {
         return;
@@ -153,17 +159,19 @@ export function App() {
     [],
   );
 
-  // Initialize and connect BoardCollabClient only when boardId AND savedNick are valid
+  // Initialize BoardCollabClient once per boardId (without savedNick in deps so setting/changing
+  // nick never disconnects or recreates the WebSocket — fixing Review #1)
   useEffect(() => {
     if (!boardId) {
       return;
     }
 
     const clientId = getOrCreateClientId();
+    const initialNick = initialNickRef.current;
     const client = new BoardCollabClient({
       boardId,
       clientId,
-      nick: savedNick,
+      nick: initialNick,
       reconcileElements: wrappedReconcile,
       getLocalElements: () => {
         const api = excalidrawApiRef.current;
@@ -187,7 +195,7 @@ export function App() {
 
     collabClientRef.current = client;
 
-    if (savedNick) {
+    if (initialNick) {
       client.connect();
     }
 
@@ -195,9 +203,10 @@ export function App() {
       client.disconnect();
       collabClientRef.current = null;
     };
-  }, [boardId, savedNick, applyRemoteScene]);
+  }, [boardId, applyRemoteScene]);
 
-  // Smooth 60 FPS cursor interpolation loop
+  // Smooth 60 FPS cursor interpolation loop that only triggers React state updates when
+  // cursors actually move, appear, or expire (fixing Review #5)
   useEffect(() => {
     let rafId = 0;
     let prevTime = performance.now();
@@ -208,28 +217,13 @@ export function App() {
 
       const client = collabClientRef.current;
       if (client) {
-        const stepped = client.cursorInterpolator.step(dt, Date.now());
-        setRemoteCursors(stepped);
-
-        const api = excalidrawApiRef.current;
-        if (api && stepped.length > 0) {
-          const collabMap = new Map<string, Record<string, unknown>>();
-          for (const c of stepped) {
-            collabMap.set(c.clientId, {
-              id: c.clientId,
-              username: c.nick,
-              pointer: {
-                x: c.x,
-                y: c.y,
-                tool: c.tool,
-              },
-              color: {
-                background: c.color,
-                stroke: c.color,
-              },
-            });
-          }
-          api.updateScene({ collaborators: collabMap });
+        const { cursors, changed, expiredClientIds } =
+          client.cursorInterpolator.stepWithDiff(dt, Date.now());
+        if (expiredClientIds.length > 0) {
+          client.removeExpiredCollaborators(expiredClientIds);
+        }
+        if (changed) {
+          setRemoteCursors(cursors);
         }
       }
 
@@ -248,10 +242,12 @@ export function App() {
       return;
     }
     saveNickname(cleaned);
+    initialNickRef.current = cleaned;
     setNickError(null);
     setSavedNick(cleaned);
     setNickDraft(cleaned);
     setIsNickDialogOpen(false);
+    // Connect (if previously idle) or send updated `hello` over the open WebSocket
     collabClientRef.current?.setNick(cleaned);
   };
 
@@ -275,7 +271,7 @@ export function App() {
     });
   };
 
-  const handlePointerDownCapture = (e: React.PointerEvent<HTMLElement>) => {
+  const handleCanvasPointerDownCapture = (e: React.PointerEvent<HTMLDivElement>) => {
     const kind = normalizePointerKind(e.pointerType);
     activePointerKindRef.current = kind;
 
@@ -299,11 +295,10 @@ export function App() {
       )
     ) {
       e.stopPropagation();
-      e.preventDefault();
     }
   };
 
-  const handlePointerMoveCapture = (e: React.PointerEvent<HTMLElement>) => {
+  const handleCanvasPointerMoveCapture = (e: React.PointerEvent<HTMLDivElement>) => {
     activePointerKindRef.current = normalizePointerKind(e.pointerType);
     if (
       shouldSuppressTouchOrPalmDrawing(
@@ -321,7 +316,7 @@ export function App() {
     }
   };
 
-  const handlePointerUpOrCancel = () => {
+  const handleCanvasPointerCancel = () => {
     collabClientRef.current?.flushSceneOnPointerRelease(latestElementsRef.current);
   };
 
@@ -361,6 +356,10 @@ export function App() {
     if (!file) {
       return;
     }
+    if (file.size > MAX_EXCALIDRAW_FILE_BYTES) {
+      setImportError(RU_STRINGS.fileImportError);
+      return;
+    }
     try {
       const rawText = await file.text();
       const imported = parseExcalidrawDocument(rawText);
@@ -380,6 +379,7 @@ export function App() {
         wrappedReconcile,
       );
       latestElementsRef.current = merged;
+      setSceneElementCount(merged.filter((el) => el.isDeleted !== true).length);
       excalidrawApiRef.current?.updateScene({
         elements: merged,
         ...(imported.viewBackgroundColor
@@ -440,12 +440,10 @@ export function App() {
     <main
       className="board-viewport"
       aria-label={RU_STRINGS.canvasAriaLabel}
-      onPointerDownCapture={handlePointerDownCapture}
-      onPointerMoveCapture={handlePointerMoveCapture}
-      onPointerUpCapture={handlePointerUpOrCancel}
-      onPointerCancelCapture={handlePointerUpOrCancel}
+      data-testid="board-viewport"
+      data-scene-elements-count={sceneElementCount}
     >
-      {/* Верхняя панель состояния, смены ника, режима пера и сохранения/открытия .excalidraw */}
+      {/* Top status bar with connection banner, nickname button, pen mode toggle, and .excalidraw file controls */}
       <header className="board-top-bar" data-testid="board-top-bar">
         {statusText && (
           <div
@@ -521,7 +519,7 @@ export function App() {
         </div>
       )}
 
-      {/* Слой плавных курсоров других участников с их никами */}
+      {/* Smooth hardware-accelerated remote collaborator cursors layer */}
       <div className="board-cursors-layer" aria-hidden="true" data-testid="remote-cursors-layer">
         {remoteCursors.map((cursor) => {
           const screenX = (cursor.x + scrollX) * zoomValue;
@@ -556,59 +554,69 @@ export function App() {
         })}
       </div>
 
-      {/* Полноэкранный холст Excalidraw (русский интерфейс, экспорт со встроенной сценой по умолчанию) */}
-      <Excalidraw
-        langCode={RU_LOCALE_CODE}
-        excalidrawAPI={(api: unknown) => {
-          excalidrawApiRef.current = api as ExcalidrawImperativeAPILike;
-        }}
-        initialData={{
-          appState: {
-            exportEmbedScene: true,
-            penMode: true,
-            penDetected: true,
-            viewBackgroundColor: "#ffffff",
-          },
-        }}
-        UIOptions={{
-          canvasActions: {
-            loadScene: true,
-            saveToActiveFile: true,
-            export: { saveFileToDisk: true },
-            changeViewBackgroundColor: true,
-            clearCanvas: true,
-            toggleTheme: true,
-          },
-        }}
-        onChange={(elements, currentAppState) => {
-          const typedElements = elements as unknown as readonly ExcalidrawElementLike[];
-          latestElementsRef.current = typedElements;
-          latestAppStateRef.current = currentAppState as unknown as Record<string, unknown>;
-          if (!isApplyingRemoteRef.current) {
-            collabClientRef.current?.queueSceneUpdate(typedElements);
-          }
-        }}
-        onPointerUpdate={(payload: {
-          pointer: { x: number; y: number; tool?: CursorToolKind };
-          button: "down" | "up";
-        }) => {
-          const tool: CursorToolKind =
-            payload.pointer.tool === "laser" ? "laser" : "pointer";
-          collabClientRef.current?.queueCursorUpdate(
-            payload.pointer.x,
-            payload.pointer.y,
-            activePointerKindRef.current,
-            tool,
-          );
-          if (payload.button === "up") {
-            collabClientRef.current?.flushSceneOnPointerRelease(
-              latestElementsRef.current,
+      {/* Canvas wrapper: pointer capture is scoped strictly to the canvas container so UI header and modal buttons are never blocked */}
+      <div
+        className="board-canvas-container"
+        onPointerDownCapture={handleCanvasPointerDownCapture}
+        onPointerMoveCapture={handleCanvasPointerMoveCapture}
+        onPointerCancelCapture={handleCanvasPointerCancel}
+      >
+        <Excalidraw
+          langCode={RU_LOCALE_CODE}
+          excalidrawAPI={(api: unknown) => {
+            excalidrawApiRef.current = api as ExcalidrawImperativeAPILike;
+          }}
+          initialData={{
+            appState: {
+              exportEmbedScene: true,
+              penMode: true,
+              penDetected: true,
+              viewBackgroundColor: "#ffffff",
+            },
+          }}
+          UIOptions={{
+            canvasActions: {
+              loadScene: true,
+              saveToActiveFile: true,
+              export: { saveFileToDisk: true },
+              changeViewBackgroundColor: true,
+              clearCanvas: true,
+              toggleTheme: true,
+            },
+          }}
+          onChange={(elements, currentAppState) => {
+            const typedElements = elements as unknown as readonly ExcalidrawElementLike[];
+            latestElementsRef.current = typedElements;
+            latestAppStateRef.current = currentAppState as unknown as Record<string, unknown>;
+            setSceneElementCount(
+              typedElements.filter((el) => el.isDeleted !== true).length,
             );
-          }
-        }}
-      />
+            if (!isApplyingRemoteRef.current) {
+              collabClientRef.current?.queueSceneUpdate(typedElements);
+            }
+          }}
+          onPointerUpdate={(payload: {
+            pointer: { x: number; y: number; tool?: CursorToolKind };
+            button: "down" | "up";
+          }) => {
+            const tool: CursorToolKind =
+              payload.pointer.tool === "laser" ? "laser" : "pointer";
+            collabClientRef.current?.queueCursorUpdate(
+              payload.pointer.x,
+              payload.pointer.y,
+              activePointerKindRef.current,
+              tool,
+            );
+            if (payload.button === "up") {
+              collabClientRef.current?.flushSceneOnPointerRelease(
+                latestElementsRef.current,
+              );
+            }
+          }}
+        />
+      </div>
 
-      {/* Модальный диалог ввода или смены ника «Как вас зовут на доске?» */}
+      {/* Modal dialog for entering or changing the user's board nickname */}
       {isNickDialogOpen && (
         <div
           className="board-modal-backdrop"

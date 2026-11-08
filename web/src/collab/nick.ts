@@ -40,7 +40,7 @@ export function generateBoardId(): string {
 
 /**
  * Extracts the board ID from a pathname of the form `/b/:id`.
- * Returns `{ matchedRoute: false, boardId: null }` when not on `/b/...`.
+ * Safely catches malformed percent-encoding (`URIError`) instead of crashing.
  */
 export function parseBoardRoute(pathname: string): {
   matchedRoute: boolean;
@@ -54,7 +54,17 @@ export function parseBoardRoute(pathname: string): {
   if (!match) {
     return { matchedRoute: true, boardId: null, rawSegment: pathname };
   }
-  const segment = decodeURIComponent(match[1] ?? "");
+  const rawMatch = match[1] ?? "";
+  let segment: string;
+  try {
+    segment = decodeURIComponent(rawMatch);
+  } catch {
+    return {
+      matchedRoute: true,
+      boardId: null,
+      rawSegment: rawMatch,
+    };
+  }
   return {
     matchedRoute: true,
     boardId: isValidBoardId(segment) ? segment : null,

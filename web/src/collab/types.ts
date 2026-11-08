@@ -68,10 +68,10 @@ export type ServerToClientMessage =
 /**
  * Connection status state for the UI status banner:
  * - "idle": waiting for nickname before opening WebSocket
- * - "connecting": «Подключение…»
+ * - "connecting": initial or reconnecting handshake in progress
  * - "connected": active WebSocket session
- * - "offline": «Нет связи, рисуем локально»
- * - "full": «Доска заполнена» (closed with code 1013)
+ * - "offline": disconnected, drawing continues locally
+ * - "full": board room is full (closed with code 1013)
  */
 export type ConnectionStatus = "idle" | "connecting" | "connected" | "offline" | "full";
 

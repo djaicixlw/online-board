@@ -1,5 +1,22 @@
 import type { ExcalidrawElementLike, ReconcileElementsFn } from "./types.js";
 
+export function isValidFiniteElement(el: unknown): el is ExcalidrawElementLike {
+  if (!el || typeof el !== "object" || Array.isArray(el)) {
+    return false;
+  }
+  const candidate = el as Record<string, unknown>;
+  return (
+    typeof candidate.id === "string" &&
+    candidate.id.length >= 1 &&
+    candidate.id.length <= 128 &&
+    typeof candidate.version === "number" &&
+    Number.isFinite(candidate.version) &&
+    candidate.version >= 0 &&
+    typeof candidate.versionNonce === "number" &&
+    Number.isFinite(candidate.versionNonce)
+  );
+}
+
 /**
  * Determines whether `incoming` should replace `existing` according to Excalidraw's
  * conflict resolution rules (`packages/excalidraw/data/reconcile.ts`):
@@ -35,16 +52,13 @@ export function mergeSceneElements(
   const mergedMap = new Map<string, ExcalidrawElementLike>();
 
   for (const localEl of localElements) {
-    mergedMap.set(localEl.id, localEl);
+    if (isValidFiniteElement(localEl)) {
+      mergedMap.set(localEl.id, localEl);
+    }
   }
 
   for (const remoteEl of remoteElements) {
-    if (
-      !remoteEl ||
-      typeof remoteEl.id !== "string" ||
-      typeof remoteEl.version !== "number" ||
-      typeof remoteEl.versionNonce !== "number"
-    ) {
+    if (!isValidFiniteElement(remoteEl)) {
       continue;
     }
     const current = mergedMap.get(remoteEl.id);
@@ -86,12 +100,7 @@ export class VersionDiffTracker {
   ): ExcalidrawElementLike[] {
     const changed: ExcalidrawElementLike[] = [];
     for (const el of elements) {
-      if (
-        !el ||
-        typeof el.id !== "string" ||
-        typeof el.version !== "number" ||
-        typeof el.versionNonce !== "number"
-      ) {
+      if (!isValidFiniteElement(el)) {
         continue;
       }
       const last = this.syncedVersions.get(el.id);
@@ -118,16 +127,11 @@ export class VersionDiffTracker {
   }
 
   /**
-   * Records that the given elements have been sent to or received from the server.
+   * Records that the given elements have been sent to or accepted from the server.
    */
   public markSynced(elements: readonly ExcalidrawElementLike[]): void {
     for (const el of elements) {
-      if (
-        !el ||
-        typeof el.id !== "string" ||
-        typeof el.version !== "number" ||
-        typeof el.versionNonce !== "number"
-      ) {
+      if (!isValidFiniteElement(el)) {
         continue;
       }
       const existing = this.syncedVersions.get(el.id);
@@ -145,14 +149,52 @@ export class VersionDiffTracker {
   }
 
   /**
+   * Records only those remote elements that were actually applied into the reconciled `mergedScene`.
+   * If `reconcileElements` preserved a locally edited/dragged element with a lower version,
+   * its synced version is not bumped to the discarded remote version (fixing Review #8).
+   */
+  public markRemoteAppliedAfterMerge(
+    remoteElements: readonly ExcalidrawElementLike[],
+    mergedScene: readonly ExcalidrawElementLike[],
+  ): void {
+    const mergedById = new Map<string, ExcalidrawElementLike>();
+    for (const el of mergedScene) {
+      if (isValidFiniteElement(el)) {
+        mergedById.set(el.id, el);
+      }
+    }
+
+    const acceptedRemote: ExcalidrawElementLike[] = [];
+    for (const remoteEl of remoteElements) {
+      if (!isValidFiniteElement(remoteEl)) {
+        continue;
+      }
+      const inMerged = mergedById.get(remoteEl.id);
+      if (
+        inMerged &&
+        inMerged.version === remoteEl.version &&
+        inMerged.versionNonce === remoteEl.versionNonce
+      ) {
+        acceptedRemote.push(remoteEl);
+      }
+    }
+    this.markSynced(acceptedRemote);
+  }
+
+  /**
    * Replaces the known server state from a received `snapshot` so any local elements edited while
    * offline (with higher version than the server snapshot) will still be detected by `getChangedElements`.
    */
   public applyServerSnapshotBaseline(
     snapshotElements: readonly ExcalidrawElementLike[],
+    mergedScene?: readonly ExcalidrawElementLike[],
   ): void {
     this.syncedVersions.clear();
-    this.markSynced(snapshotElements);
+    if (mergedScene) {
+      this.markRemoteAppliedAfterMerge(snapshotElements, mergedScene);
+    } else {
+      this.markSynced(snapshotElements);
+    }
   }
 
   public clear(): void {
