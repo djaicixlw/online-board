@@ -1,8 +1,34 @@
 import pkg from "../package.json" with { type: "json" };
-import { Board, resolveSaveIntervalMs } from "./board.js";
+import {
+  Board,
+  DEFAULT_SAVE_INTERVAL_MS,
+  DELETED_ELEMENT_RETENTION_MS,
+  isValidBoardId,
+  isValidExcalidrawElement,
+  MAX_CONNECTIONS_PER_BOARD,
+  MAX_MESSAGE_BYTES,
+  MAX_MESSAGES_PER_SECOND,
+  MAX_SNAPSHOT_CHUNK_BYTES,
+  resolveSaveIntervalMs,
+  sanitizeNickname,
+  shouldReplaceElement,
+} from "./board.js";
 import type { Env } from "./env.js";
 
-export { Board, resolveSaveIntervalMs };
+export {
+  Board,
+  DEFAULT_SAVE_INTERVAL_MS,
+  DELETED_ELEMENT_RETENTION_MS,
+  isValidBoardId,
+  isValidExcalidrawElement,
+  MAX_CONNECTIONS_PER_BOARD,
+  MAX_MESSAGE_BYTES,
+  MAX_MESSAGES_PER_SECOND,
+  MAX_SNAPSHOT_CHUNK_BYTES,
+  resolveSaveIntervalMs,
+  sanitizeNickname,
+  shouldReplaceElement,
+};
 export type { Env };
 
 export interface HealthResponse {
@@ -26,6 +52,65 @@ export function createHealthResponse(): Response {
   });
 }
 
+/**
+ * Handles WebSocket upgrade requests on GET /ws/:id?nick=<ник>.
+ */
+async function handleWebSocketUpgrade(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== "GET") {
+    return Response.json(
+      { ok: false, error: "Invalid method: expected GET for WebSocket upgrade" },
+      { status: 400 },
+    );
+  }
+
+  const upgradeHeader = request.headers.get("Upgrade");
+  if (!upgradeHeader || upgradeHeader.toLowerCase() !== "websocket") {
+    return Response.json(
+      { ok: false, error: "Missing or invalid Upgrade: websocket header" },
+      { status: 400 },
+    );
+  }
+
+  const match = /^\/ws\/([^/]+)$/.exec(url.pathname);
+  const boardId = match?.[1] ?? "";
+  if (!isValidBoardId(boardId)) {
+    return Response.json(
+      { ok: false, error: "Invalid board id: must be exactly 22 base62 characters" },
+      { status: 400 },
+    );
+  }
+
+  const nick = sanitizeNickname(url.searchParams.get("nick"));
+  if (!nick) {
+    return Response.json(
+      {
+        ok: false,
+        error:
+          "Invalid nick: must be 1..32 characters after trimming and stripping control characters",
+      },
+      { status: 400 },
+    );
+  }
+
+  // Until D1 registry lookup is added in T3, unknown boards return 404 when ALLOW_ANY_BOARD_ID !== "true"
+  if (env.ALLOW_ANY_BOARD_ID !== "true") {
+    return Response.json({ ok: false, error: "Board not found" }, { status: 404 });
+  }
+
+  const doId = env.BOARD.idFromName(boardId);
+  const stub = env.BOARD.get(doId);
+
+  const forwardUrl = new URL(request.url);
+  forwardUrl.searchParams.set("nick", nick);
+
+  return stub.fetch(
+    new Request(forwardUrl.toString(), {
+      method: "GET",
+      headers: request.headers,
+    }),
+  );
+}
+
 export default {
   async fetch(request: Request, env: Env, _ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -41,6 +126,10 @@ export default {
         );
       }
       return createHealthResponse();
+    }
+
+    if (url.pathname === "/ws" || url.pathname.startsWith("/ws/")) {
+      return handleWebSocketUpgrade(request, env, url);
     }
 
     if (url.pathname.startsWith("/api/")) {
