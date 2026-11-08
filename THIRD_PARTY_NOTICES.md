@@ -14,7 +14,7 @@
 | [typescript](https://www.npmjs.com/package/typescript) | `^5.6.3` | Apache-2.0 | [github.com/microsoft/TypeScript](https://github.com/microsoft/TypeScript) | Компилятор и проверка типов TypeScript (`strict`) |
 | [typescript-eslint](https://www.npmjs.com/package/typescript-eslint) | `^8.13.0` | MIT | [github.com/typescript-eslint/typescript-eslint](https://github.com/typescript-eslint/typescript-eslint) | Поддержка TypeScript для ESLint Flat Config |
 | [vitest](https://www.npmjs.com/package/vitest) | `^2.1.4` | MIT | [github.com/vitest-dev/vitest](https://github.com/vitest-dev/vitest) | Фреймворк модульного тестирования |
-| [ws](https://www.npmjs.com/package/ws) | `^8.18.0` | MIT | [github.com/websockets/ws](https://github.com/websockets/ws) | WebSocket-клиент/сервер для локального smoke-теста (`scripts/ws-smoke.mjs`) |
+| [ws](https://www.npmjs.com/package/ws) | `^8.18.0` | MIT | [github.com/websockets/ws](https://github.com/websockets/ws) | WebSocket-клиент/сервер для `scripts/ws-smoke.mjs` и `scripts/mock-ws.mjs` |
 
 ### Фронтенд (`web/package.json`)
 
@@ -23,6 +23,7 @@
 | [@excalidraw/excalidraw](https://www.npmjs.com/package/@excalidraw/excalidraw) | `^0.18.0` | MIT | [github.com/excalidraw/excalidraw](https://github.com/excalidraw/excalidraw) | Компонент интерактивного холста доски |
 | [react](https://www.npmjs.com/package/react) | `^18.3.1` | MIT | [github.com/facebook/react](https://github.com/facebook/react) | UI-библиотека (зависимость Excalidraw и интерфейса) |
 | [react-dom](https://www.npmjs.com/package/react-dom) | `^18.3.1` | MIT | [github.com/facebook/react](https://github.com/facebook/react) | Рендеринг React-компонентов в DOM |
+| [@playwright/test](https://www.npmjs.com/package/@playwright/test) | `^1.48.2` | Apache-2.0 | [github.com/microsoft/playwright](https://github.com/microsoft/playwright) | E2E-тестирование синхронного рисования в двух браузерах |
 | [@types/react](https://www.npmjs.com/package/@types/react) | `^18.3.12` | MIT | [github.com/DefinitelyTyped/DefinitelyTyped](https://github.com/DefinitelyTyped/DefinitelyTyped) | Типы TypeScript для React |
 | [@types/react-dom](https://www.npmjs.com/package/@types/react-dom) | `^18.3.1` | MIT | [github.com/DefinitelyTyped/DefinitelyTyped](https://github.com/DefinitelyTyped/DefinitelyTyped) | Типы TypeScript для React DOM |
 | [@vitejs/plugin-react](https://www.npmjs.com/package/@vitejs/plugin-react) | `^4.3.3` | MIT | [github.com/vitejs/vite-plugin-react](https://github.com/vitejs/vite-plugin-react) | Плагин сборки React для Vite |

@@ -7,6 +7,8 @@
     "dev": "node scripts/copy-excalidraw-assets.mjs && vite --port 5173",
     "build": "node scripts/copy-excalidraw-assets.mjs && tsc --noEmit && vite build",
     "preview": "vite preview --port 4173",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -15,6 +17,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.48.2",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",

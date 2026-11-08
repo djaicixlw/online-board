@@ -53,7 +53,7 @@ export function createHealthResponse(): Response {
 }
 
 /**
- * Handles WebSocket upgrade requests on GET /ws/:id?nick=<ник>.
+ * Handles WebSocket upgrade requests on GET /ws/:id?nick=<nickname>.
  */
 async function handleWebSocketUpgrade(request: Request, env: Env, url: URL): Promise<Response> {
   if (request.method !== "GET") {

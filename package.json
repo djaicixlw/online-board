@@ -15,9 +15,10 @@
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "mock:ws": "node scripts/mock-ws.mjs",
+    "smoke:ws": "node scripts/ws-smoke.mjs",
     "build": "npm run build --workspaces --if-present",
     "test": "vitest run",
-    "smoke:ws": "node scripts/ws-smoke.mjs",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "typecheck": "npm run typecheck --workspaces",
