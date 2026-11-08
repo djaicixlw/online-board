@@ -14,7 +14,7 @@
 | [typescript](https://www.npmjs.com/package/typescript) | `^5.6.3` | Apache-2.0 | [github.com/microsoft/TypeScript](https://github.com/microsoft/TypeScript) | Компилятор и проверка типов TypeScript (`strict`) |
 | [typescript-eslint](https://www.npmjs.com/package/typescript-eslint) | `^8.13.0` | MIT | [github.com/typescript-eslint/typescript-eslint](https://github.com/typescript-eslint/typescript-eslint) | Поддержка TypeScript для ESLint Flat Config |
 | [vitest](https://www.npmjs.com/package/vitest) | `^2.1.4` | MIT | [github.com/vitest-dev/vitest](https://github.com/vitest-dev/vitest) | Фреймворк модульного тестирования |
-| [ws](https://www.npmjs.com/package/ws) | `^8.18.0` | MIT | [github.com/websockets/ws](https://github.com/websockets/ws) | Мок-сервер WebSocket (`scripts/mock-ws.mjs`) для локальной разработки и тестов |
+| [ws](https://www.npmjs.com/package/ws) | `^8.18.0` | MIT | [github.com/websockets/ws](https://github.com/websockets/ws) | WebSocket-клиент/сервер для `scripts/ws-smoke.mjs` и `scripts/mock-ws.mjs` |
 
 ### Фронтенд (`web/package.json`)
 
