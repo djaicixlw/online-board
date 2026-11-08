@@ -1,14 +1,11 @@
 import { describe, expect, it } from "vitest";
 import pkg from "../package.json" with { type: "json" };
 import worker, { Board, resolveSaveIntervalMs, type Env } from "../src/index.js";
+import { createBoardTestHarness } from "./cloudflare-workers-shim.js";
 
 function createMockEnv(overrides: Partial<Env> = {}): Env {
-  return {
-    BOARD: {} as DurableObjectNamespace<Board>,
-    SAVE_INTERVAL_MS: "10000",
-    ALLOW_ANY_BOARD_ID: "true",
-    ...overrides,
-  };
+  const harness = createBoardTestHarness(Board, overrides);
+  return harness.env;
 }
 
 describe("Worker API and static asset routing", () => {
@@ -71,29 +68,13 @@ describe("Worker API and static asset routing", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("Canvas");
   });
-});
 
-describe("Board Durable Object stub and SAVE_INTERVAL_MS helper", () => {
-  it("resolveSaveIntervalMs defaults to 10000 and clamps to 5000..15000", () => {
-    expect(resolveSaveIntervalMs(undefined)).toBe(10000);
-    expect(resolveSaveIntervalMs("invalid")).toBe(10000);
-    expect(resolveSaveIntervalMs("10000")).toBe(10000);
-    expect(resolveSaveIntervalMs("2000")).toBe(5000);
-    expect(resolveSaveIntervalMs("30000")).toBe(15000);
-  });
-
-  it("Board stub responds with 501 and configured saveIntervalMs", async () => {
-    const mockState = {} as DurableObjectState;
-    const env = createMockEnv({ SAVE_INTERVAL_MS: "12000" });
-    const board = new Board(mockState, env);
-
-    const response = await board.fetch(new Request("http://localhost:8787/ws/test"));
-    expect(response.status).toBe(501);
-    const body = (await response.json()) as {
-      ok: boolean;
-      saveIntervalMs: number;
-    };
-    expect(body.ok).toBe(false);
-    expect(body.saveIntervalMs).toBe(12000);
+  it("resolveSaveIntervalMs defaults to 10000 and clamps to 5000..15000 in prod", () => {
+    expect(resolveSaveIntervalMs(undefined, false)).toBe(10000);
+    expect(resolveSaveIntervalMs("invalid", false)).toBe(10000);
+    expect(resolveSaveIntervalMs("10000", false)).toBe(10000);
+    expect(resolveSaveIntervalMs("2000", false)).toBe(5000);
+    expect(resolveSaveIntervalMs("30000", false)).toBe(15000);
+    expect(resolveSaveIntervalMs("1000", true)).toBe(1000);
   });
 });
