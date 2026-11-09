@@ -6,13 +6,15 @@
 
 ## Документация выполненных задач и ревью (`docs/`)
 
-В папке [`docs/`](./docs/) собрана полная документация всех этапов разработки и код-ревью:
-- [`docs/PROJECT_HISTORY.md`](./docs/PROJECT_HISTORY.md) — сводная хронологическая документация по всему проекту (`T0`, `T1`, `T2` и исправления по код-ревью).
-- [`docs/REVIEW_T2_REPORT.md`](./docs/REVIEW_T2_REPORT.md) — прикреплённый отчёт код-ревью по задаче T2 («ревью_по_доске»).
-- [`docs/REVIEW_FIXES_REPORT.md`](./docs/REVIEW_FIXES_REPORT.md) — подробный отчёт по всем 12 пунктам ревью: **что, где, как, почему, зачем и когда** было исправлено.
+В папке [`docs/`](./docs/) собрана полная документация всех этапов разработки, стабилизации и код-ревью:
+- [`docs/PROJECT_HISTORY.md`](./docs/PROJECT_HISTORY.md) — сводная хронологическая документация по всему проекту (`T0`, `T1`, `T2`, исправления по ревью и стабилизация `T2.5`).
+- [`docs/PR_T2_5_stabilize.md`](./docs/PR_T2_5_stabilize.md) — отчёт и описание PR по задаче **T2.5** («Стабилизация перед пилотом»: `PILOT_BOARD_IDS`, устранение гонки `alarm` и гибернации `SAVE_INTERVAL_MS=5000`, таблица записей SQLite «до и после», `board.runtime.test.ts`, защита `deploy.yml`).
+- [`docs/ANTIGRAVITY_T2_5_PROMPT.md`](./docs/ANTIGRAVITY_T2_5_PROMPT.md) — подробная пошаговая инструкция и готовый промпт для агента **Antigravity 2.0 (Gemini 3.8 Flash)** для выполнения сетевых шагов (`npm install`, `npm ci`, E2E в Chromium, деплой в Cloudflare).
+- [`docs/REVIEW_T2_REPORT.md`](./docs/REVIEW_T2_REPORT.md) — исходные отчёты код-ревью по задаче T2 (итерации 1 и 2).
+- [`docs/REVIEW_FIXES_REPORT.md`](./docs/REVIEW_FIXES_REPORT.md) — подробный отчёт по всем 17 пунктам ревью (12 замечаний первой итерации + 5 замечаний второй итерации): **что, где, как, почему, зачем и когда** было исправлено.
 - [`docs/PR_T0_scaffold.md`](./docs/PR_T0_scaffold.md) — отчёт и описание PR по задаче **T0** («Каркас проекта»).
 - [`docs/PR_T1_board_room.md`](./docs/PR_T1_board_room.md) — отчёт и описание PR по задаче **T1** («Комната доски», Durable Object `Board` на SQLite).
-- [`docs/PR_T2_frontend.md`](./docs/PR_T2_frontend.md) — отчёт и описание PR по задаче **T2** («Фронтенд доски», с учётом внесённых исправлений по ревью).
+- [`docs/PR_T2_frontend.md`](./docs/PR_T2_frontend.md) — отчёт и описание PR по задаче **T2** («Фронтенд доски»).
 
 ## Структура репозитория
 
@@ -23,17 +25,20 @@
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml                  # Проверки на каждый Pull Request (лицензии, типы, линтер, тесты, сборка)
-│       └── deploy.yml              # Автоматический деплой в Cloudflare при слиянии в ветку main
+│       └── deploy.yml              # Проверка, сборка и деплой в Cloudflare при слиянии в main (с concurrency)
 ├── docs/
-│   ├── PROJECT_HISTORY.md          # Полная история выполненных работ (T0, T1, T2 и пост-ревью)
-│   ├── REVIEW_T2_REPORT.md         # Исходный отчёт код-ревью («ревью_по_доске»)
-│   ├── REVIEW_FIXES_REPORT.md      # Подробный отчёт об исправлениях (что, где, как, почему, зачем, когда)
+│   ├── ANTIGRAVITY_T2_5_PROMPT.md  # Инструкция и промпт для агента Antigravity 2.0 (сетевая проверка и деплой)
 │   ├── PR_T0_scaffold.md           # Описание PR задачи T0
 │   ├── PR_T1_board_room.md         # Описание PR задачи T1
-│   └── PR_T2_frontend.md           # Описание PR задачи T2
+│   ├── PR_T2_frontend.md           # Описание PR задачи T2
+│   ├── PR_T2_5_stabilize.md        # Описание PR задачи T2.5 («Стабилизация перед пилотом»)
+│   ├── PROJECT_HISTORY.md          # Полная история выполненных работ (T0, T1, T2, ревью, T2.5)
+│   ├── REVIEW_FIXES_REPORT.md      # Подробный отчёт об исправлениях (что, где, как, почему, зачем, когда)
+│   └── REVIEW_T2_REPORT.md         # Исходный отчёт код-ревью («ревью_по_доске»)
 ├── scripts/
 │   ├── check-licenses.mjs          # Скрипт проверки лицензий зависимостей (SPDX allowlist + исключения)
 │   ├── dev.mjs                     # Скрипт одновременного локального запуска web и worker
+│   ├── gen-board-id.mjs            # Генератор криптостойких 22-символьных base62 ID досок для пилота
 │   ├── mock-ws.mjs                 # Локальный WebSocket мок-сервер для автономной проверки фронтенда
 │   └── ws-smoke.mjs                # Дымовой тест совместного рисования 3 клиентов по WebSocket
 ├── web/                            # Фронтенд: Vite + React + TypeScript + @excalidraw/excalidraw
@@ -62,18 +67,21 @@
 ├── worker/                         # Бэкенд: Cloudflare Worker (TypeScript, strict)
 │   ├── src/
 │   │   ├── board.ts                # Класс Durable Object «Board» (SQLite, WebSocket Hibernation, чанки <= 900 КБ)
-│   │   ├── env.ts                  # Типы привязок окружения (ASSETS, BOARD, DB, переменные)
+│   │   ├── cloudflare-workers.d.ts # Декларация модуля cloudflare:workers для строгой проверки типов
+│   │   ├── env.ts                  # Типы привязок окружения (ASSETS, BOARD, DB, PILOT_BOARD_IDS, переменные)
 │   │   └── index.ts                # Точка входа Worker (GET /api/health, GET /ws/:id и раздача статики)
 │   ├── test/
-│   │   ├── board.test.ts           # 11 интеграционных тестов Durable Object Board (протокол, чанки, GC, лимиты)
+│   │   ├── board.runtime.test.ts   # Интеграционный тест на реальной среде Workers (Miniflare + SQLite DO)
+│   │   ├── board.test.ts           # Модульные и интеграционные тесты Durable Object Board и PILOT_BOARD_IDS
 │   │   ├── cloudflare-workers-shim.ts # Тестовый харнесс SQLite + WebSocket Hibernation для Node
-│   │   ├── health.test.ts          # Тесты маршрута GET /api/health
-│   │   └── licenses.test.ts        # Тесты фильтра лицензий
+│   │   ├── health.test.ts          # Тесты маршрута GET /api/health и интервала SAVE_INTERVAL_MS
+│   │   ├── licenses.test.ts        # Тесты фильтра лицензий
+│   │   └── node-ambient.d.ts       # Типы встроенных модулей Node для тестов Worker
 │   ├── package.json
 │   ├── tsconfig.json
 │   ├── vitest.config.ts
 │   └── wrangler.toml               # Конфигурация Wrangler (Static Assets, Durable Object, переменные, шаблон D1)
-├── .dev.vars.example               # Пример локальных переменных разработки (SAVE_INTERVAL_MS, ALLOW_ANY_BOARD_ID)
+├── .dev.vars.example               # Пример локальных переменных разработки (SAVE_INTERVAL_MS=5000, ALLOW_ANY_BOARD_ID)
 ├── .gitignore
 ├── .prettierignore
 ├── .prettierrc.json
@@ -81,7 +89,6 @@
 ├── eslint.config.mjs               # Конфигурация ESLint 9 (strict TypeScript)
 ├── license-exceptions.json         # Список разрешённых транзитивных исключений с пояснениями
 ├── package.json                    # Корневой манифест npm workspaces и общие скрипты
-├── package-lock.json               # Локфайл npm workspaces (для npm ci и проверки лицензий)
 ├── SPEC.md                         # Спецификация архитектуры, протокола и лимитов проекта
 ├── THIRD_PARTY_NOTICES.md          # Перечень прямых зависимостей, их лицензий и копирайт Excalidraw
 └── tsconfig.base.json              # Базовая конфигурация TypeScript в режиме strict
@@ -92,7 +99,7 @@
 ### 1. Требования
 
 - Установленный **Node.js** версии `20.x` или `22.x LTS` (вместе с `npm >= 10`).
-- Доступ в интернет при первой установке пакетов (`npm ci` / `npm install`), после чего приложение работает полностью локально без обращения к внешним CDN.
+- Доступ в интернет при первой установке пакетов (`npm install` / `npm ci`), после чего приложение работает полностью локально без обращения к внешним CDN.
 
 ### 2. Установка и запуск одной командой
 
@@ -104,7 +111,7 @@ npm run dev
 ```
 
 Что делает `npm run dev`:
-1. Если файл `worker/.dev.vars` ещё не существует, автоматически создаёт его из шаблона `.dev.vars.example` с параметрами для локальной разработки (`SAVE_INTERVAL_MS=10000` и `ALLOW_ANY_BOARD_ID=true`).
+1. Если файл `worker/.dev.vars` ещё не существует, автоматически создаёт его из шаблона `.dev.vars.example` с параметрами для локальной разработки (`SAVE_INTERVAL_MS=5000` и `ALLOW_ANY_BOARD_ID=true`).
 2. Копирует локальные шрифты из пакета `@excalidraw/excalidraw` в `web/public/fonts/`, чтобы браузер загружал все ресурсы исключительно со своего локального сервера (`window.EXCALIDRAW_ASSET_PATH = "/"`).
 3. Параллельно поднимает:
    - **Cloudflare Worker (`wrangler dev`)** на `http://localhost:8787` — обрабатывает API-запросы (например, `http://localhost:8787/api/health`) и WebSocket-комнаты досок (`/ws/:id?nick=...`) в локальном Durable Object `Board`.
@@ -130,19 +137,43 @@ npm run dev
 | Команда | Описание |
 | :--- | :--- |
 | `npm run dev` | Запускает локально одновременно `web` (Vite на `:5173`) и `worker` (Wrangler на `:8787`) одной командой |
+| `npm run gen:board-id -- 10` | Генерирует `N` (по умолчанию 1, до 50) криптостойких 22-символьных base62 ID досок (`scripts/gen-board-id.mjs`) |
 | `npm run mock:ws` | Запускает автономный WebSocket мок-сервер (`scripts/mock-ws.mjs` на `:8788`) |
 | `npm run smoke:ws` | Запускает дымовой сценарий совместного рисования 3 клиентов (`scripts/ws-smoke.mjs`) |
 | `npm run build` | Собирает статику фронтенда в `web/dist` (включая локальные шрифты Excalidraw) и проверяет сборку Worker (`wrangler deploy --dry-run`) |
-| `npm run test` | Запускает все модульные и интеграционные тесты [Vitest](https://vitest.dev/) в `worker` и `web` |
+| `npm test` | Запускает все модульные и интеграционные тесты [Vitest](https://vitest.dev/) в `web` и `worker` (включая `board.runtime.test.ts`) |
 | `npm run test:e2e` | Запускает E2E-тест двух браузеров в Playwright (`web/e2e/board-collab.spec.ts`) |
 | `npm run lint` | Проверяет весь код с помощью ESLint (`strict`) и форматирование через Prettier |
 | `npm run format` | Автоматически форматирует файлы проекта с помощью Prettier |
 | `npm run typecheck` | Запускает строгую проверку типов TypeScript (`tsc --noEmit`) во всех пакетах (`web` и `worker`) |
 | `npm run check:licenses` | Проверяет лицензии всех зависимостей по `package-lock.json` и `node_modules` (разрешены `MIT`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `ISC`; исключения — в `license-exceptions.json`) |
 
+## Доступ к доскам на пилоте (`PILOT_BOARD_IDS`) и выдача ссылок ученикам
+
+В продакшене (`worker/wrangler.toml`) установлен флаг `ALLOW_ANY_BOARD_ID = "false"`, чтобы никто посторонний не мог создавать произвольные комнаты Durable Objects и расходовать бесплатную дневную квоту Cloudflare. До появления кабинета преподавателя и таблицы `boards` в D1 (задача T3) доступ к комнатам на пилоте регулируется секретом **`PILOT_BOARD_IDS`** (список до 50 разрешённых 22-символьных base62 ID через запятую). Если запрошенный ID не входит в `PILOT_BOARD_IDS`, Worker возвращает `404 Not Found`.
+
+### Как сгенерировать ID досок, задать секрет и выдать ссылки ученикам:
+
+1. Сгенерируйте нужное количество случайных ID досок (например, 10 штук — по одной на каждого ученика пилота) с помощью встроенного скрипта:
+   ```bash
+   node scripts/gen-board-id.mjs 10
+   ```
+   Скрипт выведет 10 строк с 22-символьными base62 ID и готовую строку через запятую. Сохраните этот список себе в заметки преподавателя (например: `Ученик Илья -> <ID_1>`, `Ученица Маша -> <ID_2>`).
+2. Запишите список ID через запятую в секрет Cloudflare Worker (выполняется из папки `worker/`):
+   ```bash
+   cd worker
+   npx wrangler secret put PILOT_BOARD_IDS
+   ```
+   Когда Wrangler попросит ввести значение секрета (`Enter a secret value:`), вставьте строку ID через запятую без пробелов (например: `AbCdEfGhIjKlMnOpQrSt12,0123456789abcdefghijkl,...`) и нажмите `Enter`.
+3. Отправьте каждому ученику его персональную ссылку вида:
+   ```text
+   https://online-board.<ваш-поддомен>.workers.dev/b/<ID_ДОСКИ_УЧЕНИКА>
+   ```
+   Ученик открывает ссылку в браузере (регистрация и пароль не нужны), вводит своё имя в диалоге «Как вас зовут на доске?» и сразу попадает на совместную доску с вами.
+
 ## Привязка базы данных Cloudflare D1 (`DB`)
 
-В соответствии с задачей T0 база данных D1 пока не создаётся в облаке (схема таблиц `teachers`, `students`, `boards` и миграции реализуются в задаче T3), но в проекте уже подготовлена типизированная привязка `DB` (`env.DB` типа `D1Database` в `worker/src/env.ts`) и заготовка в `worker/wrangler.toml`.
+В соответствии с задачами T0..T2.5 база данных D1 пока не создаётся в облаке (схема таблиц `teachers`, `students`, `boards` и миграции реализуются в задаче T3), но в проекте уже подготовлена типизированная привязка `DB` (`env.DB` типа `D1Database` в `worker/src/env.ts`) и заготовка в `worker/wrangler.toml`.
 
 Когда вы перейдёте к созданию базы данных D1 (по [официальной инструкции Cloudflare D1](https://developers.cloudflare.com/d1/get-started/)):
 
@@ -160,9 +191,20 @@ npm run dev
    ```
 3. При локальном запуске (`npm run dev` / `npx wrangler dev`) Wrangler автоматически создаёт локальную SQLite-копию базы D1 в папке `worker/.wrangler/state/`, не расходуя лимиты облачной базы ([Local development · Cloudflare D1 docs](https://developers.cloudflare.com/d1/best-practices/local-development/)).
 
+## Защита ветки `main` в GitHub (Branch Protection Rules)
+
+В файле `.github/workflows/deploy.yml` настроена группа `concurrency: deploy-production` (чтобы два деплоя никогда не шли параллельно) и добавлены обязательные шаги проверки (`npm run check:licenses`, `npm run typecheck`, `npm run lint`, `npm test`) перед `npm run build` и публикацией в Cloudflare.
+
+Чтобы ни один Pull Request не мог быть влит в `main` до успешного прохождения всех проверок CI:
+1. Откройте репозиторий на GitHub → **Settings** → **Branches** (или **Rules** → **Rulesets**).
+2. Нажмите **Add branch protection rule** для ветки `main`.
+3. Включите опцию **Require a pull request before merging**.
+4. Включите опцию **Require status checks to pass before merging** → **Require branches to be up to date before merging** и выберите статус-проверку **`Verify (Licenses, Typecheck, Lint, Test, Build)`** из workflow `CI` (`.github/workflows/ci.yml`).
+5. Нажмите **Create** / **Save changes**.
+
 ## Первый деплой, пошагово (для человека без опыта с серверами)
 
-Деплой настроен так, чтобы вам **не нужно было ничего настраивать вручную на серверах**: при каждом слиянии изменений (merge) в ветку `main` GitHub сам собирает проект и публикует его в Cloudflare через официальное действие [cloudflare/wrangler-action](https://github.com/cloudflare/wrangler-action) ([документация Cloudflare по GitHub Actions](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)).
+Деплой настроен так, чтобы вам **не нужно было ничего настраивать вручную на серверах**: при каждом слиянии изменений (merge) в ветку `main` GitHub сам проверяет, собирает проект и публикует его в Cloudflare через официальное действие [cloudflare/wrangler-action](https://github.com/cloudflare/wrangler-action) ([документация Cloudflare по GitHub Actions](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)).
 
 Ниже приведена подробная пошаговая инструкция, которую нужно выполнить **один раз** при запуске проекта.
 
@@ -218,10 +260,10 @@ npm run dev
    ```text
    https://online-board.<ваш-поддомен>.workers.dev
    ```
-4. Проверьте работу опубликованного приложения в браузере:
+4. Задайте секрет `PILOT_BOARD_IDS` со сгенерированными ID досок (`cd worker && npx wrangler secret put PILOT_BOARD_IDS`) и проверьте работу опубликованного приложения в браузере:
    - Откройте `https://online-board.<ваш-поддомен>.workers.dev/api/health` — вы должны увидеть ответ:
      ```json
      {"ok":true,"version":"0.1.0"}
      ```
-   - Откройте главную страницу `https://online-board.<ваш-поддомен>.workers.dev/` — откроется полноэкранная доска Excalidraw на русском языке.
+   - Откройте доску из списка `PILOT_BOARD_IDS`: `https://online-board.<ваш-поддомен>.workers.dev/b/<ВАШ_ID_ДОСКИ>` — откроется полноэкранная доска Excalidraw на русском языке.
    - Нажмите `F12` (инструменты разработчика) → вкладка **Network** → перезагрузите страницу (`Ctrl+R` / `Cmd+R`): убедитесь, что все скрипты, стили и шрифты загружаются только с вашего домена `online-board.<ваш-поддомен>.workers.dev` со статусом `200`, и нет ни одного обращения к сторонним доменам.

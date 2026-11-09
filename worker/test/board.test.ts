@@ -1,8 +1,20 @@
 import { describe, expect, it } from "vitest";
-import worker, { Board, MAX_SNAPSHOT_CHUNK_BYTES } from "../src/index.js";
+import {
+  generateBoardId,
+  generateMultipleBoardIds,
+} from "../../scripts/gen-board-id.mjs";
+import worker, {
+  Board,
+  isBoardAccessAllowed,
+  MAX_PILOT_BOARD_IDS,
+  MAX_SNAPSHOT_CHUNK_BYTES,
+  parsePilotBoardIds,
+} from "../src/index.js";
 import { createBoardTestHarness, type MockSocket } from "./cloudflare-workers-shim.js";
 
 const VALID_BOARD_ID = "AbCdEfGhIjKlMnOpQrSt12"; // 22 base62 chars
+const SECOND_PILOT_BOARD_ID = "0123456789abcdefghijkl"; // 22 base62 chars
+const UNLISTED_BOARD_ID = "ZzYyXxWwVvUuTtSsRrQq99"; // 22 base62 chars
 
 async function connectClient(
   harness: ReturnType<typeof createBoardTestHarness>,
@@ -21,8 +33,8 @@ async function connectClient(
   return { res, clientSocket, serverSocket, board, state };
 }
 
-describe("Task T1: Board Room Durable Object and WebSocket Collaboration", () => {
-  it("validates GET /ws/:id?nick=<ник> (22-char base62 id, 1..32 char nick, ALLOW_ANY_BOARD_ID)", async () => {
+describe("Task T1 & T2.5: Board Room Durable Object, Pilot Access Control, and SQLite Persistence", () => {
+  it("validates GET /ws/:id?nick=<ник> and enforces ALLOW_ANY_BOARD_ID vs PILOT_BOARD_IDS", async () => {
     const harness = createBoardTestHarness(Board);
 
     // Invalid board id length
@@ -62,19 +74,68 @@ describe("Task T1: Board Room Durable Object and WebSocket Collaboration", () =>
     );
     expect(longNickRes.status).toBe(400);
 
-    // ALLOW_ANY_BOARD_ID=false returns 404
-    const prodHarness = createBoardTestHarness(Board, { ALLOW_ANY_BOARD_ID: "false" });
+    // ALLOW_ANY_BOARD_ID=false with empty PILOT_BOARD_IDS returns 404
+    const prodEmptyHarness = createBoardTestHarness(Board, { ALLOW_ANY_BOARD_ID: "false" });
     const notFoundRes = await worker.fetch(
       new Request(`http://localhost:8787/ws/${VALID_BOARD_ID}?nick=Alice`, {
         headers: { Upgrade: "websocket" },
       }),
-      prodHarness.env,
+      prodEmptyHarness.env,
     );
     expect(notFoundRes.status).toBe(404);
+
+    // ALLOW_ANY_BOARD_ID=false with PILOT_BOARD_IDS allows listed boards (101) and rejects unlisted boards (404)
+    const pilotHarness = createBoardTestHarness(Board, {
+      ALLOW_ANY_BOARD_ID: "false",
+      PILOT_BOARD_IDS: ` ${VALID_BOARD_ID} , invalid-short-id , ${SECOND_PILOT_BOARD_ID} `,
+    });
+
+    const allowedPilotConn = await connectClient(pilotHarness, VALID_BOARD_ID, "Преподаватель");
+    expect(allowedPilotConn.res.status).toBe(101);
+
+    const secondAllowedConn = await connectClient(pilotHarness, SECOND_PILOT_BOARD_ID, "Ученик");
+    expect(secondAllowedConn.res.status).toBe(101);
+
+    const unlistedPilotRes = await worker.fetch(
+      new Request(`http://localhost:8787/ws/${UNLISTED_BOARD_ID}?nick=Alice`, {
+        headers: { Upgrade: "websocket" },
+      }),
+      pilotHarness.env,
+    );
+    expect(unlistedPilotRes.status).toBe(404);
 
     // Valid id and nick with surrounding spaces and control char get trimmed/cleaned and accepted (101)
     const okConn = await connectClient(harness, VALID_BOARD_ID, "  \u0007Анна\n  ");
     expect(okConn.res.status).toBe(101);
+  });
+
+  it("caps PILOT_BOARD_IDS at 50 valid 22-char base62 IDs and generates valid IDs via scripts/gen-board-id.mjs", () => {
+    const generated50 = generateMultipleBoardIds(MAX_PILOT_BOARD_IDS);
+    expect(generated50.length).toBe(50);
+    for (const id of generated50) {
+      expect(id).toMatch(/^[0-9A-Za-z]{22}$/);
+    }
+
+    const extra51st = generateBoardId();
+    const csvWith51 = [...generated50, extra51st].join(",");
+    const parsedSet = parsePilotBoardIds(csvWith51);
+    expect(parsedSet.size).toBe(50);
+    expect(parsedSet.has(generated50[0]!)).toBe(true);
+    expect(parsedSet.has(generated50[49]!)).toBe(true);
+    expect(parsedSet.has(extra51st)).toBe(false);
+
+    expect(
+      isBoardAccessAllowed(generated50[0]!, {
+        ALLOW_ANY_BOARD_ID: "false",
+        PILOT_BOARD_IDS: csvWith51,
+      }),
+    ).toBe(true);
+    expect(
+      isBoardAccessAllowed(extra51st, {
+        ALLOW_ANY_BOARD_ID: "false",
+        PILOT_BOARD_IDS: csvWith51,
+      }),
+    ).toBe(false);
   });
 
   it("delivers scene_update and cursor from Client A to Client B without echoing back to A", async () => {
@@ -264,13 +325,14 @@ describe("Task T1: Board Room Durable Object and WebSocket Collaboration", () =>
     ]);
   });
 
-  it("persists chunked snapshots (<= 900 KB) to SQLite, deletes only extra old chunks, and survives DO recreation (including hibernation before first flush)", async () => {
+  it("persists chunked snapshots (<= 900 KB) to SQLite without meta writes, deletes extra chunks only when shrinking, and survives DO recreation", async () => {
     const harness = createBoardTestHarness(Board, { SAVE_INTERVAL_MS: "1000" });
     const conn1 = await connectClient(harness, VALID_BOARD_ID, "Teacher");
 
     // Simulate hibernation wake-up BEFORE any snapshot flush has occurred:
     // boardId must be restored from WebSocketAttachment.boardId (not "unknown")
     const wokenBeforeFlush = await harness.recreateBoard(VALID_BOARD_ID);
+    expect(wokenBeforeFlush.board.getMetrics().boardId).toBe(VALID_BOARD_ID);
 
     // Create a large scene (> 900 KB -> 2 chunks) on the woken instance
     const bigPayload = "X".repeat(MAX_SNAPSHOT_CHUNK_BYTES + 100_000);
@@ -285,18 +347,19 @@ describe("Task T1: Board Room Durable Object and WebSocket Collaboration", () =>
       }),
     );
 
-    // Trigger alarm to flush snapshot
+    // Trigger alarm to flush snapshot (2 chunks = 2 rows written, 0 meta writes)
     await wokenBeforeFlush.board.alarm();
 
     const sqlStorage = harness.storages.get(VALID_BOARD_ID)!.sql;
     expect(sqlStorage.snapshotTable.size).toBe(2);
-    expect(sqlStorage.metaTable.get("board_id")).toBe(VALID_BOARD_ID);
+    expect(sqlStorage.metaTable.size).toBe(0);
+    expect(wokenBeforeFlush.board.getMetrics().lastFlushRowsWritten).toBe(2);
 
     // Simulate Durable Object eviction and recreation on the same SQLite storage
     const recreated = await harness.recreateBoard(VALID_BOARD_ID);
     expect(recreated.board.getMetrics().elementsCount).toBe(2);
 
-    // Now replace big-1 with a small payload so snapshot fits in 1 chunk; extra chunk 1 must be deleted
+    // Now replace big-1 with a small payload so snapshot fits in 1 chunk; extra chunk 1 must be deleted (1 insert + 1 delete = 2 rowsWritten)
     await recreated.board.webSocketMessage(
       conn1.serverSocket,
       JSON.stringify({
@@ -306,6 +369,7 @@ describe("Task T1: Board Room Durable Object and WebSocket Collaboration", () =>
     );
     await recreated.board.alarm();
     expect(sqlStorage.snapshotTable.size).toBe(1);
+    expect(recreated.board.getMetrics().lastFlushRowsWritten).toBe(2);
 
     // Recreate again and verify a newly connected client gets the updated snapshot
     await harness.recreateBoard(VALID_BOARD_ID);
@@ -321,8 +385,53 @@ describe("Task T1: Board Room Durable Object and WebSocket Collaboration", () =>
     ]);
   });
 
+  it("prevents data loss across 15s inactivity window by flushing at 5s before 10s WebSocket Hibernation eviction", async () => {
+    const harness = createBoardTestHarness(Board, {
+      ALLOW_ANY_BOARD_ID: "false",
+      PILOT_BOARD_IDS: VALID_BOARD_ID,
+      SAVE_INTERVAL_MS: "5000",
+    });
+    const conn = await connectClient(harness, VALID_BOARD_ID, "Преподаватель");
+    const t0 = 2_000_000;
+
+    // Single scene_update at t0, followed by 15s of complete silence
+    await conn.board.webSocketMessage(
+      conn.serverSocket,
+      JSON.stringify({
+        type: "scene_update",
+        elements: [{ id: "hibernation-safe-el", version: 1, versionNonce: 77, text: "Урок" }],
+      }),
+      t0,
+    );
+
+    const scheduledAlarm = await conn.state.storage.getAlarm();
+    expect(scheduledAlarm).toBe(t0 + 5_000);
+
+    // At t0 + 5000 ms (before Cloudflare's 10000 ms hibernation threshold), alarm fires and flushes to SQLite
+    await conn.board.alarm();
+    conn.state.storage.alarmTime = null;
+    expect(conn.board.getMetrics().dirty).toBe(false);
+    expect(conn.board.getMetrics().flushesCount).toBe(1);
+    expect(conn.board.getMetrics().lastFlushRowsWritten).toBe(1);
+
+    // At t0 + 10000 ms, Cloudflare hibernates/evicts the in-memory Durable Object instance
+    await harness.recreateBoard(VALID_BOARD_ID);
+
+    // At t0 + 15000 ms, client reconnects and sends hello -> element is intact from SQLite
+    const reconnected = await connectClient(harness, VALID_BOARD_ID, "Преподаватель");
+    await reconnected.board.webSocketMessage(
+      reconnected.serverSocket,
+      JSON.stringify({ type: "hello", client_id: "teacher-reconnected" }),
+      t0 + 15_000,
+    );
+    const snap = JSON.parse(reconnected.clientSocket.sentMessages[0]!);
+    expect(snap.elements).toEqual([
+      { id: "hibernation-safe-el", version: 1, versionNonce: 77, text: "Урок" },
+    ]);
+  });
+
   it("flushes immediately when the last connection closes", async () => {
-    const harness = createBoardTestHarness(Board, { SAVE_INTERVAL_MS: "10000" });
+    const harness = createBoardTestHarness(Board, { SAVE_INTERVAL_MS: "5000" });
     const c1 = await connectClient(harness, VALID_BOARD_ID, "User1");
     const c2 = await connectClient(harness, VALID_BOARD_ID, "User2");
 
@@ -369,7 +478,9 @@ describe("Task T1: Board Room Durable Object and WebSocket Collaboration", () =>
     const activeConn = openConns[0]!;
     const oversizedMsg = JSON.stringify({
       type: "scene_update",
-      elements: [{ id: "huge", version: 1, versionNonce: 1, data: "A".repeat(2 * 1024 * 1024 + 500) }],
+      elements: [
+        { id: "huge", version: 1, versionNonce: 1, data: "A".repeat(2 * 1024 * 1024 + 500) },
+      ],
     });
     await activeConn.board.webSocketMessage(activeConn.serverSocket, oversizedMsg, 10_000);
     expect(activeConn.board.getMetrics().messagesDropped).toBe(1);
@@ -401,7 +512,7 @@ describe("Task T1: Board Room Durable Object and WebSocket Collaboration", () =>
     expect(noisyConn.clientSocket.closeRecord?.code).toBe(1008);
   });
 
-  it("batches 100 scene_update messages over 5 seconds with SAVE_INTERVAL_MS=1000 into <= 5 flushes", async () => {
+  it("batches 100 scene_update messages over 5 seconds with SAVE_INTERVAL_MS=1000 into <= 5 flushes writing 1 row per flush", async () => {
     const harness = createBoardTestHarness(Board, { SAVE_INTERVAL_MS: "1000" });
     const conn = await connectClient(harness, VALID_BOARD_ID, "DrawStress");
 
@@ -446,8 +557,8 @@ describe("Task T1: Board Room Durable Object and WebSocket Collaboration", () =>
     expect(metrics.messagesAccepted).toBe(100);
     expect(metrics.flushesCount).toBeLessThanOrEqual(5);
     expect(metrics.flushesCount).toBeGreaterThanOrEqual(1);
-    // First flush writes 3 rows (meta.board_id, meta.snapshot_version, snapshot[0]), subsequent 4 flushes write 2 rows each = 11 rows total
-    expect(metrics.lastFlushRowsWritten).toBe(2);
-    expect(metrics.totalRowsWritten).toBe(11);
+    // T2.5 optimization: every 1-chunk flush writes exactly 1 row (snapshot[0]), so 5 flushes = 5 rows total
+    expect(metrics.lastFlushRowsWritten).toBe(1);
+    expect(metrics.totalRowsWritten).toBe(5);
   });
 });

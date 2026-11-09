@@ -1,11 +1,17 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env.js";
 
-export const DEFAULT_SAVE_INTERVAL_MS = 10_000;
-export const MIN_PROD_SAVE_INTERVAL_MS = 5_000;
-export const MAX_PROD_SAVE_INTERVAL_MS = 15_000;
+/**
+ * Default snapshot persistence interval (5000 ms).
+ * Set to half of Cloudflare's 10-second WebSocket Hibernation inactivity eviction threshold
+ * so scheduled alarms always flush dirty state before an idle Durable Object is evicted from RAM.
+ */
+export const DEFAULT_SAVE_INTERVAL_MS = 5_000;
+export const MIN_PROD_SAVE_INTERVAL_MS = 2_000;
+export const MAX_PROD_SAVE_INTERVAL_MS = 8_000;
 export const MIN_DEV_SAVE_INTERVAL_MS = 50;
 
+export const MAX_PILOT_BOARD_IDS = 50;
 export const MAX_MESSAGE_BYTES = 2 * 1024 * 1024; // 2 MiB
 export const MAX_CONNECTIONS_PER_BOARD = 20;
 export const MAX_MESSAGES_PER_SECOND = 30;
@@ -73,6 +79,47 @@ export function isValidBoardId(id: string | null | undefined): id is string {
 }
 
 /**
+ * Parses comma-separated `PILOT_BOARD_IDS` secret into a Set of up to 50 valid 22-char base62 board IDs.
+ * Invalid entries and whitespace are ignored.
+ */
+export function parsePilotBoardIds(raw: string | undefined): Set<string> {
+  const allowed = new Set<string>();
+  if (typeof raw !== "string" || raw.trim() === "") {
+    return allowed;
+  }
+  const parts = raw.split(",");
+  for (const part of parts) {
+    const candidate = part.trim();
+    if (isValidBoardId(candidate)) {
+      allowed.add(candidate);
+      if (allowed.size >= MAX_PILOT_BOARD_IDS) {
+        break;
+      }
+    }
+  }
+  return allowed;
+}
+
+/**
+ * Checks whether a valid 22-char base62 board ID is allowed to open a WebSocket room:
+ * - When `ALLOW_ANY_BOARD_ID === "true"` (development/testing), any valid board ID is permitted.
+ * - Otherwise (pilot/production before T3 D1 registry), the board ID must be listed in `PILOT_BOARD_IDS`.
+ */
+export function isBoardAccessAllowed(
+  boardId: string,
+  env: Pick<Env, "ALLOW_ANY_BOARD_ID" | "PILOT_BOARD_IDS">,
+): boolean {
+  if (!isValidBoardId(boardId)) {
+    return false;
+  }
+  if (env.ALLOW_ANY_BOARD_ID === "true") {
+    return true;
+  }
+  const pilotAllowlist = parsePilotBoardIds(env.PILOT_BOARD_IDS);
+  return pilotAllowlist.has(boardId);
+}
+
+/**
  * Strips C0/C1 control characters, trims whitespace, and validates length (1..32 characters).
  * Returns sanitized nickname or null if invalid.
  */
@@ -90,7 +137,8 @@ export function sanitizeNickname(rawNick: string | null | undefined): string | n
 
 /**
  * Parses SAVE_INTERVAL_MS.
- * In production, clamps to 5000..15000 ms (SPEC.md section 2).
+ * In production, clamps to 2000..8000 ms (default 5000 ms) so `alarm()` always runs before
+ * Cloudflare's 10-second WebSocket Hibernation inactivity eviction threshold.
  * When ALLOW_ANY_BOARD_ID="true" (dev/test), allows intervals down to 50 ms (e.g. 1000 ms in tests).
  */
 export function resolveSaveIntervalMs(
@@ -191,8 +239,7 @@ export class Board extends DurableObject<Env> {
   private readonly sessions = new Map<WebSocket, SessionRuntimeState>();
 
   private schemaInitialized = false;
-  private boardIdMetaWritten = false;
-  private snapshotVersion = 0;
+  private lastPersistedChunksCount = 0;
   private dirty = false;
   private alarmScheduled = false;
   private lastFlushAt = 0;
@@ -346,25 +393,10 @@ export class Board extends DurableObject<Env> {
 
     this.schemaInitialized = true;
 
-    const metaRows = sql.exec("SELECT key, value FROM meta").toArray() as Array<{
-      key: string;
-      value: string;
-    }>;
-    for (const row of metaRows) {
-      if (row.key === "board_id" && typeof row.value === "string") {
-        this.boardId = row.value;
-        this.boardIdMetaWritten = true;
-      } else if (row.key === "snapshot_version") {
-        const parsedVer = Number.parseInt(String(row.value), 10);
-        if (!Number.isNaN(parsedVer)) {
-          this.snapshotVersion = parsedVer;
-        }
-      }
-    }
-
     const chunkRows = sql
       .exec("SELECT chunk_idx, data FROM snapshot ORDER BY chunk_idx ASC")
       .toArray() as Array<{ chunk_idx: number; data: unknown }>;
+    this.lastPersistedChunksCount = chunkRows.length;
     if (chunkRows.length === 0) {
       return;
     }
@@ -425,8 +457,13 @@ export class Board extends DurableObject<Env> {
   }
 
   /**
-   * Flushes the current in-memory scene snapshot into `meta` and `snapshot` SQLite tables
-   * in a single transaction, splitting into chunks <= 900 KB (in bytes) and deleting only extra old chunks.
+   * Flushes the current in-memory scene snapshot into the `snapshot` SQLite table
+   * in a single transaction, splitting into chunks <= 900 KB (in bytes).
+   *
+   * Optimization (T2.5):
+   * - Does NOT write `meta` rows (`board_id` or `snapshot_version`) on flush; `snapshot` uses
+   *   `chunk_idx INTEGER PRIMARY KEY` (ROWID alias, 1 row write per chunk without secondary index).
+   * - Executes `DELETE FROM snapshot WHERE chunk_idx >= ?` ONLY when `chunks.length < this.lastPersistedChunksCount`.
    */
   public flushSnapshot(
     reason: "alarm" | "last_connection_close" | "manual",
@@ -463,27 +500,9 @@ export class Board extends DurableObject<Env> {
 
     const runTx = () => {
       if (!this.schemaInitialized) {
-        sql.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
         sql.exec("CREATE TABLE IF NOT EXISTS snapshot (chunk_idx INTEGER PRIMARY KEY, data BLOB)");
         this.schemaInitialized = true;
       }
-
-      this.snapshotVersion += 1;
-
-      if (!this.boardIdMetaWritten) {
-        const cBoard = sql.exec(
-          "INSERT OR REPLACE INTO meta (key, value) VALUES ('board_id', ?)",
-          this.boardId,
-        );
-        rowsWrittenInFlush += cBoard.rowsWritten ?? 1;
-        this.boardIdMetaWritten = true;
-      }
-
-      const cVer = sql.exec(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES ('snapshot_version', ?)",
-        String(this.snapshotVersion),
-      );
-      rowsWrittenInFlush += cVer.rowsWritten ?? 1;
 
       for (let idx = 0; idx < chunks.length; idx++) {
         const chunkData = chunks[idx];
@@ -495,9 +514,12 @@ export class Board extends DurableObject<Env> {
         rowsWrittenInFlush += cChunk.rowsWritten ?? 1;
       }
 
-      // Delete only extra old chunks (if previous snapshot had more chunks than current)
-      const cDel = sql.exec("DELETE FROM snapshot WHERE chunk_idx >= ?", chunks.length);
-      rowsWrittenInFlush += cDel.rowsWritten ?? 0;
+      // Only execute DELETE when the new snapshot has strictly fewer chunks than previously persisted
+      if (chunks.length < this.lastPersistedChunksCount) {
+        const cDel = sql.exec("DELETE FROM snapshot WHERE chunk_idx >= ?", chunks.length);
+        rowsWrittenInFlush += cDel.rowsWritten ?? 0;
+      }
+      this.lastPersistedChunksCount = chunks.length;
     };
 
     if (typeof this.ctx.storage.transactionSync === "function") {

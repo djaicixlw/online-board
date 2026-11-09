@@ -22,16 +22,20 @@ tag = "v1"
 new_sqlite_classes = ["Board"]
 
 # Привязка базы данных D1 с именем DB.
-# В задаче T0 сама база ещё не создаётся (схема и миграции создаются в T3).
+# В задачах T0..T2.5 сама база ещё не создаётся (схема и миграции создаются в T3).
 # Инструкция по созданию базы и подключению database_id приведена в README.md.
 # [[d1_databases]]
 # binding = "DB"
 # database_name = "online-board-db"
 # database_id = "<ЗАМЕНИТЕ_НА_UUID_ИЗ_WRANGLER_D1_CREATE>"
 
-# Переменные окружения по умолчанию (для продакшена).
+# Переменные окружения по умолчанию (для продакшена и пилота).
+# SAVE_INTERVAL_MS = "5000" (5 секунд — вдвое меньше 10-секундного порога гибернации DO,
+# чтобы отложенный alarm() гарантированно сбрасывал снимок до ухода объекта в гибернацию).
+# Для пилота список разрешённых досок задаётся в секрете PILOT_BOARD_IDS:
+#   npx wrangler secret put PILOT_BOARD_IDS
 # Для локальной разработки ALLOW_ANY_BOARD_ID=true задаётся в worker/.dev.vars
-# (создаётся из .dev.vars.example).
+# (создаётся автоматически из .dev.vars.example).
 [vars]
-SAVE_INTERVAL_MS = "10000"
+SAVE_INTERVAL_MS = "5000"
 ALLOW_ANY_BOARD_ID = "false"

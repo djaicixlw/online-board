@@ -6,12 +6,16 @@ on:
       - main
   workflow_dispatch:
 
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
 jobs:
   deploy:
-    name: Build and Deploy to Cloudflare Workers
+    name: Verify, Build and Deploy to Cloudflare Workers
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -29,6 +33,15 @@ jobs:
 
       - name: Check dependency licenses
         run: npm run check:licenses
+
+      - name: Typecheck (web & worker)
+        run: npm run typecheck
+
+      - name: Lint and check formatting (ESLint + Prettier)
+        run: npm run lint
+
+      - name: Run unit and integration tests (Vitest)
+        run: npm test
 
       - name: Build frontend static assets (web/dist) and dry-run worker
         run: npm run build

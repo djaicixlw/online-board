@@ -8,6 +8,7 @@ export default tseslint.config(
       "**/dist/**",
       "**/.wrangler/**",
       "**/coverage/**",
+      "**/artifacts/**",
       "web/public/fonts/**",
       "web/public/excalidraw-assets/**",
     ],
@@ -18,6 +19,8 @@ export default tseslint.config(
     files: ["**/*.{ts,tsx,mts,cts}"],
     rules: {
       "@typescript-eslint/no-explicit-any": "error",
+      "@typescript-eslint/no-non-null-assertion": "off",
+      "@typescript-eslint/no-invalid-void-type": "off",
       "@typescript-eslint/no-unused-vars": [
         "error",
         {
@@ -34,7 +37,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["scripts/**/*.mjs"],
+    files: ["**/scripts/**/*.mjs"],
     languageOptions: {
       globals: {
         Buffer: "readonly",
@@ -44,6 +47,7 @@ export default tseslint.config(
         URL: "readonly",
         clearTimeout: "readonly",
         console: "readonly",
+        crypto: "readonly",
         process: "readonly",
         setTimeout: "readonly",
       },

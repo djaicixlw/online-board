@@ -1,14 +1,17 @@
-import pkg from "../package.json" with { type: "json" };
+import pkg from "../package.json";
 import {
   Board,
   DEFAULT_SAVE_INTERVAL_MS,
   DELETED_ELEMENT_RETENTION_MS,
+  isBoardAccessAllowed,
   isValidBoardId,
   isValidExcalidrawElement,
   MAX_CONNECTIONS_PER_BOARD,
   MAX_MESSAGE_BYTES,
   MAX_MESSAGES_PER_SECOND,
+  MAX_PILOT_BOARD_IDS,
   MAX_SNAPSHOT_CHUNK_BYTES,
+  parsePilotBoardIds,
   resolveSaveIntervalMs,
   sanitizeNickname,
   shouldReplaceElement,
@@ -19,12 +22,15 @@ export {
   Board,
   DEFAULT_SAVE_INTERVAL_MS,
   DELETED_ELEMENT_RETENTION_MS,
+  isBoardAccessAllowed,
   isValidBoardId,
   isValidExcalidrawElement,
   MAX_CONNECTIONS_PER_BOARD,
   MAX_MESSAGE_BYTES,
   MAX_MESSAGES_PER_SECOND,
+  MAX_PILOT_BOARD_IDS,
   MAX_SNAPSHOT_CHUNK_BYTES,
+  parsePilotBoardIds,
   resolveSaveIntervalMs,
   sanitizeNickname,
   shouldReplaceElement,
@@ -92,8 +98,8 @@ async function handleWebSocketUpgrade(request: Request, env: Env, url: URL): Pro
     );
   }
 
-  // Until D1 registry lookup is added in T3, unknown boards return 404 when ALLOW_ANY_BOARD_ID !== "true"
-  if (env.ALLOW_ANY_BOARD_ID !== "true") {
+  // On pilot (ALLOW_ANY_BOARD_ID !== "true"), only board IDs listed in PILOT_BOARD_IDS are allowed
+  if (!isBoardAccessAllowed(boardId, env)) {
     return Response.json({ ok: false, error: "Board not found" }, { status: 404 });
   }
 

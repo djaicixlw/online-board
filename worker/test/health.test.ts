@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import pkg from "../package.json" with { type: "json" };
+import pkg from "../package.json";
 import worker, { Board, resolveSaveIntervalMs, type Env } from "../src/index.js";
 import { createBoardTestHarness } from "./cloudflare-workers-shim.js";
 
@@ -69,12 +69,12 @@ describe("Worker API and static asset routing", () => {
     expect(await response.text()).toContain("Canvas");
   });
 
-  it("resolveSaveIntervalMs defaults to 10000 and clamps to 5000..15000 in prod", () => {
-    expect(resolveSaveIntervalMs(undefined, false)).toBe(10000);
-    expect(resolveSaveIntervalMs("invalid", false)).toBe(10000);
-    expect(resolveSaveIntervalMs("10000", false)).toBe(10000);
-    expect(resolveSaveIntervalMs("2000", false)).toBe(5000);
-    expect(resolveSaveIntervalMs("30000", false)).toBe(15000);
+  it("resolveSaveIntervalMs defaults to 5000 and clamps to 2000..8000 in prod (below 10s hibernation threshold)", () => {
+    expect(resolveSaveIntervalMs(undefined, false)).toBe(5000);
+    expect(resolveSaveIntervalMs("invalid", false)).toBe(5000);
+    expect(resolveSaveIntervalMs("5000", false)).toBe(5000);
+    expect(resolveSaveIntervalMs("1000", false)).toBe(2000);
+    expect(resolveSaveIntervalMs("15000", false)).toBe(8000);
     expect(resolveSaveIntervalMs("1000", true)).toBe(1000);
   });
 });
