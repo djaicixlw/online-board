@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const workerRoot = resolve(currentDir, "..");
-const RUNTIME_BOARD_ID = "RtBoArD0123456789AbCdE"; // 22 base62 chars
+const RUNTIME_BOARD_ID_FAST = "RtBoArDFast0123456789A"; // 22 base62 chars
+const RUNTIME_BOARD_ID_SILENCE = "RtBoArDSilence01234567"; // 22 base62 chars
 
 interface MiniflareSocketLike {
   accept(): void;
@@ -70,37 +71,42 @@ async function loadMiniflareAndBundle(): Promise<{
   };
 }
 
-describe("Task T2.5 & T2.5b: Board Durable Object Runtime Integration Suite (Miniflare workerd + SQLite)", () => {
-  it(
-    "verifies hello + snapshot, scene_update broadcast, real alarm flush, immediate close flush, 15s inactivity survival, DO restart, and ping/pong auto-response",
-    { timeout: 35_000 },
-    async (ctx) => {
-      const requireRuntime =
-        Boolean(process.env.CI) || process.env.REQUIRE_RUNTIME === "1";
+async function requireOrSkipMiniflare(ctx: { skip: () => void }) {
+  const requireRuntime =
+    Boolean(process.env.CI) || process.env.REQUIRE_RUNTIME === "1";
 
-      let mfEnv: Awaited<ReturnType<typeof loadMiniflareAndBundle>>;
-      try {
-        mfEnv = await loadMiniflareAndBundle();
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (requireRuntime) {
-          throw new Error(
-            `[board.runtime.test] Miniflare runtime is required (CI / REQUIRE_RUNTIME=1), but failed to load: ${msg}`,
-          );
-        }
-        console.warn(
-          `[WARN] [board.runtime.test] Skipping real Workers runtime test because Miniflare is unavailable (${msg}). Set REQUIRE_RUNTIME=1 to enforce failure.`,
-        );
-        ctx.skip();
+  try {
+    return await loadMiniflareAndBundle();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (requireRuntime) {
+      throw new Error(
+        `[board.runtime.test] Miniflare runtime is required (CI / REQUIRE_RUNTIME=1), but failed to load: ${msg}`,
+      );
+    }
+    console.warn(
+      `[WARN] [board.runtime.test] Skipping real Workers runtime test because Miniflare is unavailable (${msg}). Set REQUIRE_RUNTIME=1 to enforce failure.`,
+    );
+    ctx.skip();
+    return null;
+  }
+}
+
+describe("Task T2.5, T2.5b & T2.5c: Board Durable Object Runtime Integration Suite (Miniflare workerd + SQLite)", () => {
+  it(
+    "verifies hello + snapshot, scene_update broadcast, ping/pong auto-response, 2.6s alarm flush, immediate close flush, and SQLite disk persistence across Miniflare restarts",
+    { timeout: 60_000 },
+    async (ctx) => {
+      const mfEnv = await requireOrSkipMiniflare(ctx);
+      if (!mfEnv) {
         return;
       }
 
-      const persistDir = resolve(workerRoot, ".wrangler/tmp-runtime-test-sqlite");
+      const persistDir = resolve(workerRoot, ".wrangler/tmp-runtime-test-fast");
       rmSync(persistDir, { recursive: true, force: true });
       mkdirSync(persistDir, { recursive: true });
 
-      // In production mode (ALLOW_ANY_BOARD_ID="false"), SAVE_INTERVAL_MS="2000" is clamped to 2000 ms.
-      const createMfInstance = (saveIntervalMs = "2000") =>
+      const createMfInstance = () =>
         new mfEnv.MiniflareClass({
           modules: true,
           script: mfEnv.scriptContent,
@@ -113,20 +119,20 @@ describe("Task T2.5 & T2.5b: Board Durable Object Runtime Integration Suite (Min
           },
           durableObjectsPersist: persistDir,
           bindings: {
-            SAVE_INTERVAL_MS: saveIntervalMs,
+            SAVE_INTERVAL_MS: "2000",
             ALLOW_ANY_BOARD_ID: "false",
-            PILOT_BOARD_IDS: RUNTIME_BOARD_ID,
+            PILOT_BOARD_IDS: RUNTIME_BOARD_ID_FAST,
           },
         });
 
-      let mf = createMfInstance("2000");
+      let mf = createMfInstance();
       try {
         const resA = await mf.dispatchFetch(
-          `http://localhost/ws/${RUNTIME_BOARD_ID}?nick=Alice`,
+          `http://localhost/ws/${RUNTIME_BOARD_ID_FAST}?nick=Alice`,
           { headers: { Upgrade: "websocket" } },
         );
         const resB = await mf.dispatchFetch(
-          `http://localhost/ws/${RUNTIME_BOARD_ID}?nick=Bob`,
+          `http://localhost/ws/${RUNTIME_BOARD_ID_FAST}?nick=Bob`,
           { headers: { Upgrade: "websocket" } },
         );
         expect(resA.status).toBe(101);
@@ -179,11 +185,10 @@ describe("Task T2.5 & T2.5b: Board Durable Object Runtime Integration Suite (Min
         await new Promise((r) => setTimeout(r, 60));
         expect(messagesA).toContain('{"type":"pong"}');
 
-        // 4. Wait >= 2.5s (2600 ms) so the 2000 ms production alarm genuinely fires while sockets stay open (C.13)
+        // 4. Wait 2600 ms so the 2000 ms production alarm fires while sockets stay open
         await new Promise((r) => setTimeout(r, 2_600));
 
-        // 5. Immediate flush on socket close (B.5 / C.14): send a second element and close wsA immediately
-        // (while wsB is still open and before the next 2000 ms alarm)
+        // 5. Immediate flush on socket close: send a second element and close wsA immediately
         const closeStrokeEl = {
           id: "rt-close-stroke-2",
           type: "freedraw",
@@ -200,11 +205,10 @@ describe("Task T2.5 & T2.5b: Board Durable Object Runtime Integration Suite (Min
         wsB.close(1000, "done");
         await mf.dispose();
 
-        // 6. Restart Miniflare on the same SQLite directory (with default 5000 ms interval) and verify BOTH elements survived,
-        // then test a new edit followed by 15s of complete silence (C.13)
-        mf = createMfInstance("5000");
+        // 6. Restart Miniflare on the same SQLite directory to verify disk persistence
+        mf = createMfInstance();
         const resC = await mf.dispatchFetch(
-          `http://localhost/ws/${RUNTIME_BOARD_ID}?nick=Charlie`,
+          `http://localhost/ws/${RUNTIME_BOARD_ID_FAST}?nick=Charlie`,
           { headers: { Upgrade: "websocket" } },
         );
         expect(resC.status).toBe(101);
@@ -227,10 +231,63 @@ describe("Task T2.5 & T2.5b: Board Durable Object Runtime Integration Suite (Min
           "rt-rect-1",
           "rt-close-stroke-2",
         ]);
+        wsC.close(1000, "done");
+      } finally {
+        await mf.dispose();
+        rmSync(persistDir, { recursive: true, force: true });
+      }
+    },
+  );
 
-        // Send a 3rd element and wait 15 seconds in silence so the 5s alarm flushes before 10s hibernation
+  it(
+    "persists scene_update across a 15-second silence window with default SAVE_INTERVAL_MS=5000 and survives Miniflare restart on the same SQLite directory",
+    { timeout: 60_000 },
+    async (ctx) => {
+      const mfEnv = await requireOrSkipMiniflare(ctx);
+      if (!mfEnv) {
+        return;
+      }
+
+      const persistDir = resolve(workerRoot, ".wrangler/tmp-runtime-test-silence");
+      rmSync(persistDir, { recursive: true, force: true });
+      mkdirSync(persistDir, { recursive: true });
+
+      const createMfInstance = () =>
+        new mfEnv.MiniflareClass({
+          modules: true,
+          script: mfEnv.scriptContent,
+          compatibilityDate: "2026-11-07",
+          durableObjects: {
+            BOARD: {
+              className: "Board",
+              useSQLite: true,
+            },
+          },
+          durableObjectsPersist: persistDir,
+          bindings: {
+            SAVE_INTERVAL_MS: "5000",
+            ALLOW_ANY_BOARD_ID: "false",
+            PILOT_BOARD_IDS: RUNTIME_BOARD_ID_SILENCE,
+          },
+        });
+
+      let mf = createMfInstance();
+      try {
+        const resA = await mf.dispatchFetch(
+          `http://localhost/ws/${RUNTIME_BOARD_ID_SILENCE}?nick=Teacher`,
+          { headers: { Upgrade: "websocket" } },
+        );
+        expect(resA.status).toBe(101);
+        const wsA = resA.webSocket;
+        if (!wsA) {
+          throw new Error("Expected upgraded WebSocket A");
+        }
+        wsA.accept();
+        wsA.send(JSON.stringify({ type: "hello", client_id: "rt-silence-a", nick: "Teacher" }));
+        await new Promise((r) => setTimeout(r, 80));
+
         const silenceEl = {
-          id: "rt-15s-silence-3",
+          id: "rt-15s-silence-el",
           type: "ellipse",
           x: 200,
           y: 200,
@@ -238,36 +295,36 @@ describe("Task T2.5 & T2.5b: Board Durable Object Runtime Integration Suite (Min
           versionNonce: 303,
           updated: Date.now(),
         };
-        wsC.send(JSON.stringify({ type: "scene_update", elements: [silenceEl] }));
+        wsA.send(JSON.stringify({ type: "scene_update", elements: [silenceEl] }));
+
+        // Wait 15.2 seconds in complete silence (alarm fires at ~5s)
         await new Promise((r) => setTimeout(r, 15_200));
         await mf.dispose();
 
-        // Reopen Miniflare and confirm all 3 elements are persisted in SQLite
-        mf = createMfInstance("5000");
-        const resD = await mf.dispatchFetch(
-          `http://localhost/ws/${RUNTIME_BOARD_ID}?nick=Dana`,
+        // Restart Miniflare on the same SQLite directory and verify the element was persisted on disk
+        mf = createMfInstance();
+        const resB = await mf.dispatchFetch(
+          `http://localhost/ws/${RUNTIME_BOARD_ID_SILENCE}?nick=Student`,
           { headers: { Upgrade: "websocket" } },
         );
-        const wsD = resD.webSocket;
-        if (!wsD) {
-          throw new Error("Expected upgraded WebSocket D");
+        expect(resB.status).toBe(101);
+        const wsB = resB.webSocket;
+        if (!wsB) {
+          throw new Error("Expected upgraded WebSocket B");
         }
-        const messagesD: string[] = [];
-        wsD.accept();
-        wsD.addEventListener("message", (ev) => messagesD.push(String(ev.data)));
-        wsD.send(JSON.stringify({ type: "hello", client_id: "rt-d", nick: "Dana" }));
+        const messagesB: string[] = [];
+        wsB.accept();
+        wsB.addEventListener("message", (ev) => messagesB.push(String(ev.data)));
+        wsB.send(JSON.stringify({ type: "hello", client_id: "rt-silence-b", nick: "Student" }));
         await new Promise((r) => setTimeout(r, 100));
 
-        const finalSnapshot = JSON.parse(messagesD[0] ?? "{}") as {
+        const finalSnapshot = JSON.parse(messagesB[0] ?? "{}") as {
           type: string;
           elements: Array<{ id: string }>;
         };
-        expect(finalSnapshot.elements.map((e) => e.id)).toEqual([
-          "rt-rect-1",
-          "rt-close-stroke-2",
-          "rt-15s-silence-3",
-        ]);
-        wsD.close(1000, "done");
+        expect(finalSnapshot.type).toBe("snapshot");
+        expect(finalSnapshot.elements).toEqual([silenceEl]);
+        wsB.close(1000, "done");
       } finally {
         await mf.dispose();
         rmSync(persistDir, { recursive: true, force: true });

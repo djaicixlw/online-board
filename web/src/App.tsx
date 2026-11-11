@@ -108,6 +108,7 @@ export function App() {
   // on the first stylus (`pointerType === "pen"`) contact, and remains manually toggleable (T2.5b section B.10).
   const [penMode, setPenMode] = useState<boolean>(false);
   const penAutoActivatedRef = useRef<boolean>(false);
+  const [persistentBoardError, setPersistentBoardError] = useState<string | null>(null);
   const [bannerError, setBannerError] = useState<string | null>(null);
 
   const excalidrawApiRef = useRef<ExcalidrawImperativeAPILike | null>(null);
@@ -200,7 +201,9 @@ export function App() {
       onCollaboratorsChange: (nextCollabs) => setCollaborators(nextCollabs),
       onRemoteCursorsChange: (cursors) => setRemoteCursors(cursors),
       onServerError: (code) => {
-        if (code === "board_too_large") {
+        if (code === "board_not_saved") {
+          setPersistentBoardError(RU_STRINGS.boardNotSavedError);
+        } else if (code === "board_too_large") {
           setBannerError(RU_STRINGS.boardTooLargeError);
         }
       },
@@ -479,6 +482,8 @@ export function App() {
             ? RU_STRINGS.statusConnected
             : null;
 
+  const activeErrorText = persistentBoardError ?? bannerError;
+
   const appState = latestAppStateRef.current;
   const scrollX = typeof appState.scrollX === "number" ? appState.scrollX : 0;
   const scrollY = typeof appState.scrollY === "number" ? appState.scrollY : 0;
@@ -565,13 +570,13 @@ export function App() {
         )}
       </header>
 
-      {bannerError && (
+      {activeErrorText && (
         <div
           className="board-toast-error"
           role="alert"
           data-testid="board-error-banner"
         >
-          {bannerError}
+          {activeErrorText}
         </div>
       )}
 

@@ -1,56 +1,43 @@
-# Промпт и инструкция T2.5b для агента с интернетом и браузером (Antigravity 2.0 / Gemini 3.8 Flash)
+# Промпт и инструкция T2.5b + T2.5c для агента с интернетом и браузером (Antigravity 2.0 / Gemini 3.8 Flash)
 
-Все кодовые доработки разделов **A, B и C** из `PROMPT_T2_5b.md` уже внесены в репозиторий в ветке `task/T2.5-stabilize`:
-- **Раздел A (пункты 1–4)**:
-  - В `tsconfig.base.json` возвращён `"exactOptionalPropertyTypes": true` (все типы в `worker/` и `web/` приведены в полное соответствие).
-  - В `eslint.config.mjs` возвращены правила `@typescript-eslint/no-non-null-assertion` и `@typescript-eslint/no-invalid-void-type`, убран ignore `**/artifacts/**`, устранены все операторы `!` в коде и тестах.
-  - Удалены рукописные объявления типов `worker/src/cloudflare-workers.d.ts`, `worker/test/node-ambient.d.ts`, `scripts/check-licenses.d.ts`, `scripts/gen-board-id.d.ts`; в `worker/tsconfig.json` прописано `"types": ["@cloudflare/workers-types", "node"]`.
-  - Из `license-exceptions.json` удалены добавленные по памяти исключения `MPL-2.0` (`axe-core`, `lightningcss`), а из `scripts/check-licenses.mjs` убрана поддержка `"*"`.
-- **Раздел B (пункты 5–11)**:
-  - **Пункт 5**: в `worker/src/board.ts` (`closeSessionInternal`, `webSocketClose`, `webSocketError`) при `this.dirty === true` сброс `flushSnapshot("connection_close", nowMs)` выполняется немедленно при закрытии любого сокета, не пересчитывая остальные сокеты.
-  - **Пункт 6**: добавлен потолок размера доски (`MAX_BOARD_ELEMENTS = 20_000`, `MAX_SNAPSHOT_BYTES = 20 * 1024 * 1024`); при превышении возвращается `{"type":"error","code":"board_too_large"}` и показывается русская плашка ошибки в `web/src/App.tsx`.
-  - **Пункт 7**: при ошибке разбора снимка (`snapshot_load_error`) повреждённые куски сохраняются в таблицу `snapshot_backup`, логируется `snapshot_corrupted_backup_saved`, а флаг `snapshotCorrupted` блокирует перезапись таблицы `snapshot` пустой сценой.
-  - **Пункт 8**: в `flushSnapshot()` вычисляется дайджест каждого куска (`computeChunkDigest`) и в SQLite записываются только изменившиеся куски.
-  - **Пункт 9**: генерация случайного ID доски на `/` и кнопка «Открыть новую доску» в `web/src/App.tsx` оставлены только в режиме разработки (`import.meta.env.DEV`); в продакшене корень `/` показывает «Откройте ссылку на доску, которую вам прислал преподаватель».
-  - **Пункт 10**: режим пера по умолчанию выключен (`penMode = false`, режим «авто»), автоматически включается при первом касании пером и переключается вручную; касания пальцем по тулбару Excalidraw (`isExcalidrawUiTarget`) не блокируются.
-  - **Пункт 11**: `scripts/ws-smoke.mjs` переписан на подключение к настоящему `wrangler dev` по `WS_SMOKE_URL` (по умолчанию `ws://localhost:8787`) с использованием только пакетов из `node_modules`.
-- **Раздел C (пункты 12–14)**:
-  - В `worker/test/board.runtime.test.ts` убран переход на шим: при `CI` или `REQUIRE_RUNTIME=1` тест падает, если `Miniflare` не загрузился; без переменной выводит предупреждение и помечается как `skip`. В `.github/workflows/ci.yml` и `deploy.yml` добавлен `REQUIRE_RUNTIME: "1"`.
-  - В `board.runtime.test.ts` ожидание `alarm` увеличено до `2 600` мс (для продакшен-зажима `2 000` мс), добавлена проверка немедленного сброса при закрытии сокета и проверка 15 секунд тишины на `Miniflare`.
+Все кодовые доработки из **`PROMPT_T2_5b.md` (разделы A, B, C, E)** и **`PROMPT_T2_5c.md` (пункты 1–5)** уже внесены в репозиторий в ветке `task/T2.5-stabilize`:
+- **T2.5c п. 1 (`flushSnapshot` и откат транзакции)**: в `worker/src/board.ts` новые дайджесты (`stagedDigests`), число кусков (`stagedChunksCount`) и `stagedSchemaInitialized` собираются во временные переменные внутри `runTx` и записываются в поля объекта (`this.persistedChunkDigests`, `this.lastPersistedChunksCount`, `this.schemaInitialized`) только после успешного завершения `transactionSync`. Добавлен модульный тест с выбросом исключения в `sql.exec` посередине сброса и последующим успешным сбросом всех кусков.
+- **T2.5c п. 2 (`snapshot_backup` и `board_not_saved`)**: если при повреждённом снимке резервная копия в `snapshot_backup` записана успешно, объект логирует `snapshot_corrupted_backup_saved` один раз, стартует с пустой сценой и дальше сохраняет новые правки как обычно. Запись блокируется (`this.snapshotSaveBlocked = true`) только если создать резервную копию в `snapshot_backup` не удалось — в этом случае при `hello` клиенту отправляется `{"type":"error","code":"board_not_saved"}`, а клиент показывает постоянную плашку «Доска повреждена, изменения не сохраняются. Сообщите преподавателю». В `README.md` описано восстановление из `snapshot_backup`.
+- **T2.5c п. 3 (разделение `tsconfig` в `worker/`)**: `worker/tsconfig.json` проверяет `src/**/*.ts` строго с `"types": ["@cloudflare/workers-types"]`, а `worker/tsconfig.test.json` проверяет `test/**/*.ts` с `"types": ["@cloudflare/workers-types", "node"]`; скрипт `typecheck` в `worker/package.json` запускает оба.
+- **T2.5c п. 4 (разделение `board.runtime.test.ts` и тайм-ауты)**: `worker/test/board.runtime.test.ts` разделён на 2 независимых теста с тайм-аутом `60 000` мс каждый (короткие проверки протокола/диска отдельно, сценарий «15 секунд тишины» отдельно).
+- **T2.5c п. 5 (порядок merge и `PILOT_BOARD_IDS`)**: в `README.md` и `docs/PR_T2_5_stabilize.md` зафиксирован точный порядок: сначала секреты GitHub (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`), затем первый деплой (слияние PR в `main`), затем `wrangler secret put PILOT_BOARD_IDS`, затем ссылки ученикам.
 
 ---
 
 ## Готовый промпт для агента с интернетом и браузером (скопируйте целиком)
 
 ```text
-Ты исполнитель задачи T2.5b в проекте «онлайн-доска для уроков». Прочитай SPEC.md, AGENTS.md и docs/PR_T2_5_stabilize.md полностью, правила обязательны. Работай в ветке task/T2.5-stabilize (продолжение предыдущей работы), результат оформи в виде PR, в main не пушь (AGENTS.md запрещает). В PR пиши только то, что реально запустил, без самооценок вроде «0 ошибок» и «100%».
+Ты исполнитель задачи T2.5b + T2.5c в проекте «онлайн-доска для уроков». Прочитай SPEC.md, AGENTS.md и docs/PR_T2_5_stabilize.md полностью, правила обязательны. Работай в ветке task/T2.5-stabilize (продолжение предыдущей работы), результат оформи в виде PR, в main не пушь (AGENTS.md запрещает). В PR пиши только то, что реально запустил, без самооценок вроде «0 ошибок» и «100%».
 
-В ветке task/T2.5-stabilize уже написан код разделов A, B и C задачи T2.5b. Твоя задача — проверить пункты A–C и выполнить раздел D на Node 22 с настоящим реестром npm, настоящим рантаймом workerd (Miniflare и wrangler dev) и браузером Chromium (Playwright):
+В ветке task/T2.5-stabilize уже написан код всех пунктов T2.5b (разделы A, B, C, E) и T2.5c (пункты 1–5):
+1. В flushSnapshot (worker/src/board.ts) новые дайджесты и число кусков применяются к полям объекта только после успешного завершения transactionSync (плюс тест на выброс исключения в sql.exec посередине сброса).
+2. При повреждённом снимке (loadSnapshotFromSqlite): если копия в snapshot_backup записана успешно, объект стартует с пустой сценой и продолжает сохранять правки как обычно; запись блокируется только если записать snapshot_backup не удалось (при hello отправляется {"type":"error","code":"board_not_saved"}, клиент показывает постоянную плашку).
+3. В worker/ разделены tsconfig.json (только @cloudflare/workers-types для src) и tsconfig.test.json (для test), скрипт typecheck проверяет оба.
+4. В worker/test/board.runtime.test.ts тесты разделены на два независимых теста (короткие проверки отдельно, сценарий «15 секунд тишины» отдельно) с тайм-аутом 60 секунд каждый.
+5. В README.md описано восстановление из snapshot_backup и точный порядок первого деплоя (секреты GitHub -> первый деплой -> PILOT_BOARD_IDS -> ссылки ученикам).
 
-A. Проверь, что в коде соблюдены все требования разделов A–C:
-1. tsconfig.base.json содержит "exactOptionalPropertyTypes": true. Если при настоящем tsc --noEmit что-то не собирается, исправь код (без ослабления tsconfig).
-2. eslint.config.mjs не выключает @typescript-eslint/no-non-null-assertion и @typescript-eslint/no-invalid-void-type и не содержит ignore **/artifacts/**.
-3. Рукописных .d.ts-заглушек (worker/src/cloudflare-workers.d.ts, worker/test/node-ambient.d.ts) нет. Если после npm install падает typecheck, поправь конфигурацию tsconfig / зависимости, не создавая своих .d.ts-заглушек.
-4. После настоящего npm install выполни `npm ls axe-core lightningcss`. Если они входят в дерево, не добавляй MPL-2.0 в license-exceptions.json молча: оставь вопрос владельцу в PR (пакет, путь зависимости, назначение, продакшен или только разработка). В license-exceptions.json оставь только те пермиссивные исключения, которые реально понадобились на настоящем прогоне `npm run check:licenses`.
+Твоя задача — выполнить раздел D (настоящие проверки) на Node 22 с настоящим реестром npm, настоящим рантаймом workerd (Miniflare и wrangler dev) и браузером Chromium (Playwright):
 
-D. Настоящие проверки (на Node 22 в чистой копии):
-15. Удали package-lock.json, если он есть, выполни `npm install` с настоящим реестром (версии в границах package.json: Excalidraw ^0.18, Vite ^5.4, wrangler ^4), закоммить новый package-lock.json, затем склонируй репозиторий в новый каталог (`git clone . /tmp/online-board-clean`) и выполни там `npm ci`.
-16. В чистой копии на Node 22 выполни по очереди и приложи в docs/PR_T2_5_stabilize.md полный реальный вывод команд:
+1. Удали package-lock.json, если он есть, выполни `npm install` с настоящим реестром (версии в границах package.json: Excalidraw ^0.18, Vite ^5.4, wrangler ^4), закоммить новый package-lock.json, затем склонируй репозиторий в новый каталог (`git clone . /tmp/online-board-clean`) и выполни там `npm ci`.
+2. Выполни `npm ls axe-core lightningcss`. Если они входят в дерево, не добавляй MPL-2.0 в license-exceptions.json молча: оставь вопрос владельцу в PR (пакет, путь зависимости, назначение, продакшен или только разработка). В license-exceptions.json оставь только те пермиссивные исключения, которые реально понадобились на настоящем прогоне `npm run check:licenses`.
+3. В чистой копии на Node 22 выполни по очереди и приложи в docs/PR_T2_5_stabilize.md полный реальный вывод команд:
    - `npm run check:licenses` (с реальным числом проверенных пакетов из сотен зависимостей);
-   - `npm run typecheck` (`tsc --noEmit` с `exactOptionalPropertyTypes: true`);
-   - `npm run lint`;
-   - `REQUIRE_RUNTIME=1 npm test` (убедись, что `worker/test/board.runtime.test.ts` реально прошёл на Miniflare, а не был пропущен);
+   - `npm run typecheck` (проверяет web/tsconfig.json, worker/tsconfig.json и worker/tsconfig.test.json с `exactOptionalPropertyTypes: true`);
+   - `npm run lint` (без отключённых правил);
+   - `REQUIRE_RUNTIME=1 npm test` (замерь фактическую длительность обоих тестов в `worker/test/board.runtime.test.ts` на Miniflare и убедись, что тайм-аут установлен с запасом не меньше двух раз);
    - `npm run build`;
    - `npx playwright install chromium && npm run test:e2e`.
    Чини только то, что падает, не ослабляя тесты и конфигурацию.
-17. Живой сценарий на `wrangler dev`:
-   - Запусти `npm run dev` в фоновом режиме и прогони `npm run smoke:ws` против настоящего `wrangler dev` (`ws://localhost:8787`).
-   - Проверь на живом `wrangler dev`:
-     а) одно сообщение `scene_update`, пауза 15 секунд, новое подключение — элемент на месте;
-     б) штрих (`scene_update`) и немедленное закрытие сокета/вкладки, новое подключение — элемент на месте.
-   - Приложи в `docs/PR_T2_5_stabilize.md` фактические строки лога `snapshot_flush` (`rowsWritten`) с настоящего рантайма `wrangler dev` и фактический список запросов браузера из вкладки Network (из прогона Playwright Chromium).
-18. Проверь, что все правки закоммичены в ветку `task/T2.5-stabilize`, и оформи финальное описание PR в `docs/PR_T2_5_stabilize.md` с разделами «Что проверено» (с реальными выводами команд) и «Что не проверено».
-
-E. Деплой (НЕ выполняй сам):
-19. Не сливай ветку в `main` и не запускай `wrangler deploy` или `wrangler secret put` сам (AGENTS.md запрещает прямой пуш в `main` и деплой без разрешения владельца). Оставь в PR готовую пошаговую инструкцию для владельца.
+4. Живой сценарий на `wrangler dev`:
+   - Запусти `npm run dev` в одном окне и прогони `npm run smoke:ws` во втором окне против настоящего `wrangler dev` (`ws://localhost:8787`).
+   - Проверь вручную на живом `wrangler dev`:
+     а) одно сообщение `scene_update`, пауза 15 секунд (проверка выгрузки объекта по 10-секундному таймеру гибернации), новое подключение — элемент на месте;
+     б) штрих (`scene_update`) и немедленное закрытие вкладки/сокета, новое подключение — элемент на месте.
+   - Приложи в `docs/PR_T2_5_stabilize.md` фактические строки лога `snapshot_flush` (`rowsWritten`) с настоящего рантайма `wrangler dev` и фактический список запросов браузера из вкладки Network.
+5. Закоммить все изменения в ветку `task/T2.5-stabilize` и оформи PR (в `main` не пушь и `wrangler deploy` / `wrangler secret put` сам не запускай — деплой выполняет владелец по инструкции в README.md).
 ```

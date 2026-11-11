@@ -36,7 +36,7 @@ async function connectClient(
   return { res, clientSocket, serverSocket, board, state };
 }
 
-describe("Task T1, T2.5 & T2.5b: Board Room Durable Object, Pilot Access Control, and SQLite Persistence", () => {
+describe("Task T1, T2.5, T2.5b & T2.5c: Board Room Durable Object, Pilot Access Control, and SQLite Persistence", () => {
   it("validates GET /ws/:id?nick=<ник> and enforces ALLOW_ANY_BOARD_ID vs PILOT_BOARD_IDS", async () => {
     const harness = createBoardTestHarness(Board);
 
@@ -417,6 +417,61 @@ describe("Task T1, T2.5 & T2.5b: Board Room Durable Object, Pilot Access Control
     ]);
   });
 
+  it("does not mutate persistedChunkDigests or lastPersistedChunksCount when sql.exec throws mid-flush, writing all chunks on subsequent retry (T2.5c item 1)", async () => {
+    const harness = createBoardTestHarness(Board, { SAVE_INTERVAL_MS: "1000" });
+    const conn = await connectClient(harness, VALID_BOARD_ID, "Teacher");
+
+    // Create a 2-chunk scene (> 900 KB)
+    const bigPayload = "Y".repeat(MAX_SNAPSHOT_CHUNK_BYTES + 80_000);
+    await conn.board.webSocketMessage(
+      conn.serverSocket,
+      JSON.stringify({
+        type: "scene_update",
+        elements: [
+          { id: "tx-big-1", version: 1, versionNonce: 1, customData: bigPayload },
+          { id: "tx-small-2", version: 1, versionNonce: 2, text: "tail" },
+        ],
+      }),
+    );
+
+    const boardStorage = harness.storages.get(VALID_BOARD_ID);
+    if (!boardStorage) {
+      throw new Error("Expected storage for board");
+    }
+    const origExec = boardStorage.sql.exec.bind(boardStorage.sql);
+
+    // Inject a failure on the 2nd chunk write (chunk_idx === 1) so the transaction rolls back mid-flush
+    let failOnChunkOne = true;
+    boardStorage.sql.exec = ((query: string, ...bindings: unknown[]) => {
+      if (
+        failOnChunkOne &&
+        query.toUpperCase().startsWith("INSERT OR REPLACE INTO SNAPSHOT") &&
+        bindings[0] === 1
+      ) {
+        throw new Error("Simulated SQLite write failure on chunk 1");
+      }
+      return origExec(query, ...bindings);
+    }) as typeof boardStorage.sql.exec;
+
+    expect(() => conn.board.flushSnapshot("manual")).toThrow(
+      /Simulated SQLite write failure on chunk 1/,
+    );
+
+    // Transaction rolled back: snapshotTable is still empty and dirty is still true
+    expect(boardStorage.sql.snapshotTable.size).toBe(0);
+    expect(conn.board.getMetrics().dirty).toBe(true);
+
+    // Restore normal sql.exec and retry flushSnapshot -> must write BOTH chunks (rowsWritten === 2)
+    failOnChunkOne = false;
+    boardStorage.sql.exec = origExec;
+
+    const retryStats = conn.board.flushSnapshot("manual");
+    expect(retryStats).not.toBeNull();
+    expect(retryStats?.rowsWritten).toBe(2);
+    expect(boardStorage.sql.snapshotTable.size).toBe(2);
+    expect(conn.board.getMetrics().dirty).toBe(false);
+  });
+
   it("flushes immediately on any socket close or error if dirty (T2.5b section B.5)", async () => {
     const harness = createBoardTestHarness(Board, { SAVE_INTERVAL_MS: "5000" });
     const c1 = await connectClient(harness, VALID_BOARD_ID, "User1");
@@ -434,7 +489,6 @@ describe("Task T1, T2.5 & T2.5b: Board Room Durable Object, Pilot Access Control
     expect(c1.board.getMetrics().dirty).toBe(true);
 
     // B.5: Closing c1 while dirty immediately flushes to SQLite even if c2 is still open
-    // (because in real workerd, closing sockets may still be listed in ctx.getWebSockets())
     await c1.board.webSocketClose(c1.serverSocket, 1000, "tab-closed", true);
     expect(c1.board.getMetrics().flushesCount).toBe(1);
     expect(c1.board.getMetrics().dirty).toBe(false);
@@ -498,7 +552,7 @@ describe("Task T1, T2.5 & T2.5b: Board Room Durable Object, Pilot Access Control
     });
   });
 
-  it("backs up corrupted snapshot chunks to snapshot_backup and refuses to overwrite corrupted snapshot on subsequent flush (T2.5b section B.7)", async () => {
+  it("backs up corrupted snapshot to snapshot_backup and resumes normal saving when backup succeeds, or sends board_not_saved and blocks saving when backup fails (T2.5c item 2)", async () => {
     const harness = createBoardTestHarness(Board, { SAVE_INTERVAL_MS: "1000" });
     const conn = await connectClient(harness, VALID_BOARD_ID, "Teacher");
 
@@ -516,29 +570,72 @@ describe("Task T1, T2.5 & T2.5b: Board Room Durable Object, Pilot Access Control
       throw new Error("Expected storage for board");
     }
 
-    // Corrupt chunk 0 in SQLite storage
+    // Subcase A: Corrupt chunk 0 in SQLite storage; backup to `snapshot_backup` succeeds
     const corruptedBytes = new TextEncoder().encode("{corrupted-json-payload");
     boardStorage.sql.snapshotTable.set(0, corruptedBytes);
 
-    // Recreate DO -> loadSnapshotFromSqlite detects corruption, copies chunk 0 to snapshot_backup, and sets snapshotCorrupted = true
     const recreated = await harness.recreateBoard(VALID_BOARD_ID);
     expect(recreated.board.getMetrics().snapshotCorrupted).toBe(true);
+    expect(recreated.board.getMetrics().snapshotSaveBlocked).toBe(false);
     expect(boardStorage.sql.snapshotBackupTable.size).toBe(1);
     const backedUpChunk = boardStorage.sql.snapshotBackupTable.get(0);
     expect(new TextDecoder().decode(backedUpChunk?.data)).toBe("{corrupted-json-payload");
 
-    // Subsequent scene_update + flush attempt must NOT overwrite the original `snapshot` table
+    // Because backup succeeded, the board starts empty and continues saving new edits normally
     await recreated.board.webSocketMessage(
       conn.serverSocket,
       JSON.stringify({
         type: "scene_update",
-        elements: [{ id: "new-el", version: 1, versionNonce: 20 }],
+        elements: [{ id: "fresh-el-after-backup", version: 1, versionNonce: 20 }],
       }),
     );
     const flushResult = recreated.board.flushSnapshot("manual");
-    expect(flushResult).toBeNull();
-    expect(new TextDecoder().decode(boardStorage.sql.snapshotTable.get(0))).toBe(
+    expect(flushResult).not.toBeNull();
+    expect(flushResult?.rowsWritten).toBe(1);
+    // And snapshot_backup still holds the original corrupted data for owner recovery
+    expect(new TextDecoder().decode(boardStorage.sql.snapshotBackupTable.get(0)?.data)).toBe(
       "{corrupted-json-payload",
+    );
+
+    // Subcase B: Corrupt chunk 0 again AND simulate `snapshot_backup` failure -> saving is blocked and `hello` sends `board_not_saved`
+    const unbackedCorruptedBytes = new TextEncoder().encode("{second-corrupted-payload");
+    boardStorage.sql.snapshotTable.set(0, unbackedCorruptedBytes);
+    const origExec = boardStorage.sql.exec.bind(boardStorage.sql);
+    boardStorage.sql.exec = ((query: string, ...bindings: unknown[]) => {
+      if (query.toUpperCase().includes("SNAPSHOT_BACKUP")) {
+        throw new Error("Simulated backup table failure");
+      }
+      return origExec(query, ...bindings);
+    }) as typeof boardStorage.sql.exec;
+
+    const recreatedFailedBackup = await harness.recreateBoard(VALID_BOARD_ID);
+    expect(recreatedFailedBackup.board.getMetrics().snapshotCorrupted).toBe(true);
+    expect(recreatedFailedBackup.board.getMetrics().snapshotSaveBlocked).toBe(true);
+
+    // Connecting client sends hello -> receives snapshot followed by {"type":"error","code":"board_not_saved"}
+    conn.clientSocket.sentMessages.length = 0;
+    await recreatedFailedBackup.board.webSocketMessage(
+      conn.serverSocket,
+      JSON.stringify({ type: "hello", client_id: "c-after-fail", nick: "Teacher" }),
+    );
+    expect(conn.clientSocket.sentMessages.length).toBe(2);
+    expect(JSON.parse(conn.clientSocket.sentMessages[0] ?? "{}").type).toBe("snapshot");
+    expect(JSON.parse(conn.clientSocket.sentMessages[1] ?? "{}")).toEqual({
+      type: "error",
+      code: "board_not_saved",
+    });
+
+    // Attempting to flush while snapshotSaveBlocked === true returns null and does not overwrite `snapshot`
+    await recreatedFailedBackup.board.webSocketMessage(
+      conn.serverSocket,
+      JSON.stringify({
+        type: "scene_update",
+        elements: [{ id: "unsaved-el", version: 1, versionNonce: 30 }],
+      }),
+    );
+    expect(recreatedFailedBackup.board.flushSnapshot("manual")).toBeNull();
+    expect(new TextDecoder().decode(boardStorage.sql.snapshotTable.get(0))).toBe(
+      "{second-corrupted-payload",
     );
   });
 

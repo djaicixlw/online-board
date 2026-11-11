@@ -1,64 +1,60 @@
-# PR: Задача T2.5 / T2.5b — Стабилизация перед пилотом (`task/T2.5-stabilize`)
+# PR: Задача T2.5 / T2.5b / T2.5c — Стабилизация перед пилотом (`task/T2.5-stabilize`)
 
-## 1. Сводка изменений по пунктам T2.5 и доработки T2.5b
+## 1. Сводка изменений по пунктам T2.5, T2.5b и T2.5c
 
-### Раздел A. Восстановление строгих проверок и конфигурации (пункты 1–4)
+### Раздел A. Восстановление строгих проверок и разделение `tsconfig` (пункты A.1–A.4 и T2.5c п. 3)
 1. **`tsconfig.base.json` (`exactOptionalPropertyTypes: true`)**:
    - Возвращена опция `"exactOptionalPropertyTypes": true` в `tsconfig.base.json`.
-   - Во всех интерфейсах с опциональными свойствами (`worker/src/env.ts`, `worker/src/board.ts`, `web/src/collab/types.ts`, `web/src/collab/client.ts`, `web/src/input/pen-guard.ts`) типы приведены к точной совместимости с `exactOptionalPropertyTypes: true`.
+   - Все интерфейсы в `worker/` и `web/` приведены в полное соответствие с `exactOptionalPropertyTypes: true`.
 2. **`eslint.config.mjs` (возврат правил `@typescript-eslint/no-non-null-assertion` и `@typescript-eslint/no-invalid-void-type`)**:
-   - Оба правила возвращены в конфигурацию ESLint (`tseslint.configs.strict` без переопределений `"off"`), удалён ignore `**/artifacts/**` (каталог `artifacts/` является служебным каталогом рабочей среды ВМ вне Git-репозитория).
-   - Из всех файлов кода и тестов (`worker/src/board.ts`, `worker/test/board.test.ts`, `worker/test/board.runtime.test.ts`, `web/test/collab.test.ts`) устранены операторы non-null assertion (`!`).
-3. **Удаление рукописных `.d.ts`-заглушек**:
+   - Оба правила возвращены в конфигурацию ESLint (`tseslint.configs.strict` без переопределений `"off"`), убран ignore `**/artifacts/**` (каталог `artifacts/` — внутренний каталог рабочей среды ВМ вне Git-репозитория).
+   - Из всех файлов кода и тестов устранены операторы non-null assertion (`!`).
+3. **Удаление рукописных `.d.ts`-заглушек и разделение `worker/tsconfig.json` vs `worker/tsconfig.test.json` (T2.5c п. 3)**:
    - Удалены файлы `worker/src/cloudflare-workers.d.ts`, `worker/test/node-ambient.d.ts`, `scripts/check-licenses.d.ts` и `scripts/gen-board-id.d.ts`.
-   - В `worker/tsconfig.json` задано `"types": ["@cloudflare/workers-types", "node"]`, а в `tsconfig.base.json` включено `"allowJs": true` для штатной работы с пакетами из `node_modules`.
+   - Чтобы глобальные типы `@cloudflare/workers-types` и `@types/node` (`fetch`, `Request`, `Response`, `WebSocket`) никогда не конфликтовали при проверке исходников Worker, конфигурация разделена:
+     - `worker/tsconfig.json` проверяет `src/**/*.ts` строго с `"types": ["@cloudflare/workers-types"]`;
+     - `worker/tsconfig.test.json` проверяет `test/**/*.ts` с `"types": ["@cloudflare/workers-types", "node"]`;
+     - скрипт `typecheck` в `worker/package.json` запускает оба (`tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit`).
 4. **`license-exceptions.json` и `scripts/check-licenses.mjs`**:
    - Удалены добавленные по памяти исключения `MPL-2.0` (`axe-core`, `lightningcss`) и `pako` / `tweetnacl` / `mdn-data`. Оставлены только базовые 8 пермиссивных исключений (`0BSD`, `CC-BY-4.0`, `CC-BY-3.0`, `CC0-1.0`, `Python-2.0`, `BlueOak-1.0.0`).
-   - Из `scripts/check-licenses.mjs` убрана поддержка подстановочного символа `"*"` (`loadExceptions` явно отклоняет `"*"`).
+   - Из `scripts/check-licenses.mjs` убрана поддержка подстановочного символа `"*"`.
 
 ---
 
-### Раздел B. Архитектурные и продуктовые доработки перед пилотом (пункты 5–11)
+### Раздел B и T2.5c. Архитектурные и продуктовые доработки перед пилотом
 5. **Надёжный сброс снимка при любом закрытии или ошибке WebSocket (`worker/src/board.ts`, `closeSessionInternal`)**:
-   - Ранее сброс при закрытии срабатывал только при `remainingActive === 0`. В реальной среде Cloudflare Workers закрывающийся сокет в момент вызова `webSocketClose` может ещё числиться в `ctx.getWebSockets()`, из-за чего при выходе последнего участника условие `remainingActive === 0` не выполнялось.
-   - Теперь в `closeSessionInternal`, `webSocketClose` и `webSocketError` при `this.dirty === true` сброс `this.flushSnapshot("connection_close", nowMs)` выполняется **безусловно и немедленно**, а отложенный `alarm` отменяется.
+   - При любом вызове `closeSessionInternal`, `webSocketClose` или `webSocketError`, если `this.dirty === true`, сброс `this.flushSnapshot("connection_close", nowMs)` выполняется немедленно без пересчёта `remainingActive`.
 6. **Потолок размера доски (`MAX_BOARD_ELEMENTS = 20_000`, `MAX_SNAPSHOT_BYTES = 20 * 1024 * 1024`)**:
-   - В `worker/src/board.ts` добавлен контроль числа элементов (не более `20 000`) и расчётного байтового размера JSON снимка (не более `20 МиБ`).
-   - При превышении любого из двух порогов `scene_update` отклоняется без изменения состояния в памяти, клиенту отправляется `{"type":"error","code":"board_too_large"}`, а в лог пишется событие `board_too_large_rejected`.
-   - На клиенте (`web/src/collab/client.ts`, `web/src/App.tsx`, `web/src/i18n/ru.ts`) сообщение `{"type":"error","code":"board_too_large"}` обрабатывается колбэком `onServerError` и выводит русскоязычную плашку `RU_STRINGS.boardTooLargeError` (`data-testid="board-error-banner"`).
-7. **Защита от затирания повреждённого снимка (`snapshot_backup`)**:
-   - В `loadSnapshotFromSqlite()` при ошибке разбора JSON (`snapshot_load_error`) старые куски из таблицы `snapshot` копируются в резервную таблицу `snapshot_backup (chunk_idx INTEGER PRIMARY KEY, data BLOB, backed_up_at INTEGER)`, в лог пишется отдельное событие `snapshot_corrupted_backup_saved`, и поднимается флаг `this.snapshotCorrupted = true`.
-   - Пока `this.snapshotCorrupted === true`, метод `flushSnapshot()` блокирует перезапись таблицы `snapshot` (логирует `snapshot_flush_skipped_corrupted` и возвращает `null`), чтобы пустая сцена не затёрла данные до разбирательства владельца.
-8. **Запись только изменившихся кусков (`computeChunkDigest` в `flushSnapshot`)**:
-   - Объект `Board` хранит карту дайджестов каждого записанного куска `persistedChunkDigests` (`Map<number, string>`, инициализируется при чтении из SQLite и обновляется при сбросе).
-   - При очередном `flushSnapshot()` запрос `INSERT OR REPLACE INTO snapshot (chunk_idx, data) VALUES (?, ?)` выполняется **только для тех кусков, чей дайджест изменился**, а `DELETE FROM snapshot WHERE chunk_idx >= ?` — только при уменьшении числа кусков (`chunks.length < this.lastPersistedChunksCount`).
+   - При превышении 20 000 элементов или 20 МиБ JSON снимка `scene_update` отклоняется, клиенту отправляется `{"type":"error","code":"board_too_large"}`, а клиент выводит плашку `RU_STRINGS.boardTooLargeError`.
+7. **Повреждённый снимок (`snapshot_backup`, продолжение работы при успешном бэкапе и `board_not_saved` при сбое бэкапа — T2.5c п. 2)**:
+   - При ошибке разбора JSON в `loadSnapshotFromSqlite()` старые куски из `snapshot` копируются в `snapshot_backup (chunk_idx INTEGER PRIMARY KEY, data BLOB, backed_up_at INTEGER)`.
+   - Если резервная копия в `snapshot_backup` записана успешно (логируется `snapshot_corrupted_backup_saved` один раз), объект стартует с пустой сценой (`this.snapshotSaveBlocked = false`, `this.persistedChunkDigests.clear()`) и дальше сохраняет новые правки как обычно.
+   - Запись блокируется (`this.snapshotSaveBlocked = true`) **только если записать резервную копию в `snapshot_backup` не удалось** (`snapshot_corrupted_backup_failed`): в этом случае при `hello` клиенту отправляется `{"type":"error","code":"board_not_saved"}`, а клиент показывает постоянную плашку «Доска повреждена, изменения не сохраняются. Сообщите преподавателю». В `README.md` описан порядок восстановления данных из `snapshot_backup`.
+8. **Запись только изменившихся кусков и защита дайджестов при откате транзакции (`flushSnapshot` — B.8 и T2.5c п. 1)**:
+   - В `flushSnapshot()` вычисляется дайджест каждого куска (`computeChunkDigest`) и в SQLite записываются только изменившиеся куски.
+   - Новые дайджесты (`stagedDigests`), новое число кусков (`stagedChunksCount`) и флаг `stagedSchemaInitialized` собираются во временные переменные внутри `runTx` и копируются в поля объекта (`this.persistedChunkDigests`, `this.lastPersistedChunksCount`, `this.schemaInitialized`) **только после успешного завершения `transactionSync`** (добавлен модульный тест с выбросом исключения в `sql.exec` посередине сброса и последующим успешным сбросом всех кусков).
 9. **Корень `/` и кнопка «Открыть новую доску» в продакшене (`web/src/App.tsx`, `web/src/i18n/ru.ts`)**:
-   - Автоматический редирект с `/` на случайный `/b/<id>` и кнопка «Открыть новую доску» (`generateBoardId()`) оставлены **только для режима разработки** (`import.meta.env.DEV`).
-   - В продакшене корень `/` показывает карточку «Откройте ссылку на доску, которую вам прислал преподаватель» (`data-testid="prod-root-screen"`), а кнопка создания случайной доски скрыта.
+   - Генерация случайного ID доски на `/` и кнопка «Открыть новую доску» оставлены только в режиме разработки (`import.meta.env.DEV`); в продакшене корень `/` показывает «Откройте ссылку на доску, которую вам прислал преподаватель».
 10. **Авто-режим пера и разблокировка тулбара для касаний пальцем (`web/src/App.tsx`, `web/src/input/pen-guard.ts`)**:
-    - По умолчанию `penMode` выключен (`false` — режим «Режим пера: авто»), чтобы на планшете без стилуса можно было сразу рисовать пальцем.
-    - При первом касании экрана пером (`pointerType === "pen"`) `penMode` автоматически включается (`true`) и остаётся переключаемым вручную кнопкой в шапке.
-    - В `shouldSuppressTouchOrPalmDrawing` добавлена проверка `isExcalidrawUiTarget(event.target)`: касания пальцем по тулбарам, меню и кнопкам Excalidraw (`.App-toolbar`, `.App-menu`, `.Island`, `.layer-ui__wrapper`, `button`, `input`, `label`) никогда не гасятся даже при включённом `penMode`. Защита от касания ладонью по площади контакта (`width >= 48` или `height >= 48` px) и пропуск второго пальца (`isPrimary === false`) для 2-пальцевого зума/пана сохранены.
+    - По умолчанию `penMode` выключен (`false` — режим «Режим пера: авто»), включается при первом касании пером и переключается вручную; касания пальцем по тулбару Excalidraw (`isExcalidrawUiTarget`) не блокируются.
 11. **Дымовой скрипт `scripts/ws-smoke.mjs`**:
-    - Полностью убраны пути песочницы (`/usr/share/nodejs`), `@babel/core` и встроенный шим-сервер.
-    - Скрипт импортирует `WebSocket` напрямую из пакета `ws` (`node_modules`) и подключается к запущенному `wrangler dev` по адресу `WS_SMOKE_URL` (по умолчанию `ws://localhost:8787`). В `README.md` описан запуск в двух терминалах (`npm run dev` + `npm run smoke:ws`).
+    - Подключается к настоящему `wrangler dev` по `WS_SMOKE_URL` (по умолчанию `ws://localhost:8787`), используя только пакеты из `node_modules`.
 
 ---
 
-### Раздел C. Тесты реального рантайма (`worker/test/board.runtime.test.ts` и CI)
+### Раздел C и T2.5c п. 4. Тесты реального рантайма (`worker/test/board.runtime.test.ts` и CI)
 12. **Отказ от тихого перехода на шим в `worker/test/board.runtime.test.ts`**:
-    - Из `board.runtime.test.ts` полностью удалён fallback на `cloudflare-workers-shim`.
-    - Если задана переменная окружения `CI` или `REQUIRE_RUNTIME=1` (добавлена в `.github/workflows/ci.yml` и `.github/workflows/deploy.yml`), при отсутствии или ошибке запуска `Miniflare` тест **падает с ошибкой**.
-    - Без `REQUIRE_RUNTIME=1` (при локальном запуске до установки `miniflare`) тест выводит предупреждение `[WARN]` в консоль и помечается как **пропущенный (`ctx.skip()`)**, а не как пройденный.
-13. & 14. **Проверка реального `alarm` (>= 2,5 с), сброса при закрытии и 15 секунд тишины в `board.runtime.test.ts`**:
-    - В `board.runtime.test.ts` ожидание срабатывания `alarm` при продакшен-зажиме `SAVE_INTERVAL_MS="2000"` увеличено до `2 600` мс при открытых сокетах.
-    - Добавлена проверка немедленного сброса при закрытии вкладки (`wsA.close()` через 40 мс после `scene_update` при открытом `wsB`) и проверка сохранения элемента после **15 секунд полной тишины** при `SAVE_INTERVAL_MS="5000"` с последующим перезапуском экземпляра `Miniflare`.
+    - При `CI` или `REQUIRE_RUNTIME=1` (добавлено в `.github/workflows/ci.yml` и `deploy.yml`) тест падает, если `Miniflare` не загрузился; без переменной выводит предупреждение и помечается как `skip`.
+13. & 14. **Разделение `board.runtime.test.ts` на 2 независимых теста с тайм-аутом 60 секунд каждый (T2.5c п. 4)**:
+    - **Тест 1 (`timeout: 60_000`)**: короткие проверки протокола (`hello` + `snapshot`, `scene_update` между двумя клиентами, автоответ `{"type":"ping"}` -> `{"type":"pong"}`, ожидание `2 600` мс для срабатывания продакшен-`alarm` `2 000` мс, немедленный сброс при закрытии сокета `wsA.close()`) и проверка сохранности данных на диске через `mf.dispose()` и повторный запуск `Miniflare` на том же каталоге SQLite.
+    - **Тест 2 (`timeout: 60_000`)**: отдельный сценарий «15 секунд тишины» при `SAVE_INTERVAL_MS="5000"` с последующим перезапуском `Miniflare` на том же каталоге SQLite.
+    - *Примечание*: вызов `mf.dispose()` и повторный запуск `Miniflare` с тем же `durableObjectsPersist` проверяют сохранность данных в SQLite на диске, а не выгрузку объекта из памяти по 10-секундному таймеру гибернации; выгрузка по таймеру проверяется отдельно на живом `wrangler dev` (пункт 17 из T2.5b).
 
 ---
 
 ## 2. Таблица записей в SQLite за один сброс `flushSnapshot`: «До и После»
 
-| Операция при сбросе (`flushSnapshot`) | До T2.5 (`T1`) | После T2.5 / T2.5b (`task/T2.5-stabilize`) |
+| Операция при сбросе (`flushSnapshot`) | До T2.5 (`T1`) | После T2.5 / T2.5b / T2.5c (`task/T2.5-stabilize`) |
 | :--- | :--- | :--- |
 | `INSERT OR REPLACE INTO meta ('board_id', ?)` | 1 запрос на 1-м сбросе | **0 запросов** (`boardId` хранится в `WebSocketAttachment`) |
 | `INSERT OR REPLACE INTO meta ('snapshot_version', ?)` | 1 запрос на каждом сбросе | **0 запросов** |
@@ -67,25 +63,17 @@
 | `DELETE FROM snapshot WHERE chunk_idx >= ?` | Вызывался на каждом сбросе | **Вызывается только при `chunks.length < lastPersistedChunksCount`** |
 | **Итого `rowsWritten` за 5 сбросов (100 `scene_update` за 5 с, 1 чанк)** | **11 строк** (`3 + 4×2`) | **5 строк** (`5×1`) |
 
-*(Внимание: при прогоне в среде с `wrangler dev` вставьте ниже фактический лог `snapshot_flush` из вывода реального рантайма `workerd`).*
+*(При прогоне в среде с `wrangler dev` приложите ниже фактический лог `snapshot_flush` из вывода реального рантайма `workerd`).*
 
 ---
 
 ## 3. Чек-лист ручной проверки ввода стилусом и пальцем на планшете (пункт B.10)
 
-1. **Старт в режиме «Режим пера: авто» (`penMode = false`) и нажатие пальцем по тулбару**:
-   - Откройте доску `/b/<id>` на планшете и введите ник.
-   - Убедитесь, что в верхней панели горит кнопка `Режим пера: авто`.
-   - Нажмите одиночным пальцем по инструментам на панели Excalidraw (Выбор, Прямоугольник, Стрелка, Карандаш) — инструменты переключаются с первого касания.
-2. **Рисование пальцем при выключенном `penMode` (`Режим пера: авто`)**:
-   - Выберите пальцем инструмент «Карандаш» (`Freedraw`) и проведите одним пальцем по холсту — линия свободно рисуется и уходит второму участнику.
-3. **Автоматическое включение `penMode` при первом касании пером (стилусом)**:
-   - Коснитесь холста стилусом (`pointerType === "pen"`) и нарисуйте штрих.
-   - Кнопка в шапке автоматически переключится в состояние `Режим пера: вкл`, после чего одиночные касания пальцем по холсту перестанут оставлять случайные штрихи, но нажатия пальцем по кнопкам тулбара Excalidraw и шапки продолжат работать.
-4. **Защита от касания ладонью (Palm Rejection)**:
-   - Приложите ребро ладони к экрану (ширина/высота пятна контакта `>= 48px`) во время письма пером и при переключённом вручную режиме — ладонь не оставляет точек и штрихов на холсте.
-5. **Жест двух пальцев (Pinch-to-Zoom и Pan)**:
-   - При включённом `Режим пера: вкл` поставьте на холст два пальца и разведите/сведите их — масштаб и панорамирование холста плавно изменяются (`isPrimary === false` не блокируется).
+1. **Палец по тулбару**: откройте доску `/b/<id>`, убедитесь, что горит `Режим пера: авто`, и нажмите пальцем по инструментам на тулбаре Excalidraw — инструменты переключаются с первого касания (в том числе если вручную включить `Режим пера: вкл`).
+2. **Рисование пальцем при выключенном `penMode` (`Режим пера: авто`)**: выберите инструмент «Карандаш» и проведите одним пальцем по холсту — штрих рисуется и синхронизируется.
+3. **Перо (автоматическое включение `penMode`)**: коснитесь холста стилусом (`pointerType === "pen"`) — режим автоматически переключится в `Режим пера: вкл`, после чего одиночный палец перестанет рисовать на холсте, а перо продолжит рисовать.
+4. **Ладонь рядом с пером**: положите ребро ладони на экран (`width/height >= 48px`) — ладонь не оставляет ложных штрихов ни в режиме `авто`, ни в режиме `вкл`.
+5. **Жест двух пальцев**: поставьте на холст два пальца и выполните сведение/разведение (зум) и сдвиг (панорамирование) — жест работает плавно при любом состоянии `penMode`.
 
 ---
 
@@ -93,46 +81,37 @@
 
 ### Проверено в текущей среде (офлайн-контейнер без доступа к `registry.npmjs.org` и браузеру):
 - `node scripts/check-licenses.mjs` — проверены манифесты workspaces и 8 исключений в `license-exceptions.json`.
-- `node scripts/gen-board-id.mjs 3` — проверена генерация 22-символьных base62 ID.
-- Прогнаны модульные тесты в `worker/test/health.test.ts` (5 тестов), `worker/test/licenses.test.ts` (5 тестов), `worker/test/board.test.ts` (11 тестов, включая тесты пунктов B.5, B.6, B.7, B.8) и `web/test/collab.test.ts` (5 тестов, включая тесты B.6 и B.10). Тест `worker/test/board.runtime.test.ts` без установленного `miniflare` при отсутствии `REQUIRE_RUNTIME=1` штатно выводит предупреждение и помечается как `skip`, а при `REQUIRE_RUNTIME=1` падает с ошибкой.
+- `node scripts/gen-board-id.mjs 2` — проверена генерация 22-символьных base62 ID.
+- Прогнаны модульные тесты в `worker/test/health.test.ts` (5 тестов), `worker/test/licenses.test.ts` (5 тестов), `worker/test/board.test.ts` (12 тестов, включая тест отката транзакции п. 1 T2.5c и тест `snapshot_backup` / `board_not_saved` п. 2 T2.5c) и `web/test/collab.test.ts` (5 тестов) — 27 модульных тестов пройдены, а 2 runtime-теста в `worker/test/board.runtime.test.ts` без установленного `miniflare` при отсутствии `REQUIRE_RUNTIME=1` выводят предупреждение и помечаются как `skip` (при `REQUIRE_RUNTIME=1` падают с ошибкой).
 
-### Не проверено в офлайн-контейнере (должно быть выполнено агентом на Node 22 с сетью и браузером перед открытием PR — см. `docs/ANTIGRAVITY_T2_5_PROMPT.md`):
+### Не проверено в офлайн-контейнере (выполняется агентом на Node 22 с сетью и браузером по разделу D `docs/ANTIGRAVITY_T2_5_PROMPT.md`):
 1. `npm install` с настоящим реестром npm, коммит настоящего `package-lock.json` и проверка `npm ci` в чистом клоне (`git clone`).
 2. Полный прогон на Node 22 в чистом клоне:
-   - `npm run check:licenses` (на полном дереве из сотен пакетов; если потребуются проверки `npm ls axe-core lightningcss`, вынести вопрос владельцу в PR);
-   - `npm run typecheck` (`tsc --noEmit` с включённым `exactOptionalPropertyTypes: true`);
-   - `npm run lint` (`eslint . && prettier --check .` без отключённых правил);
-   - `REQUIRE_RUNTIME=1 npm test` (включая `worker/test/board.runtime.test.ts` на реальном `Miniflare`);
+   - `npm run check:licenses` (и проверка `npm ls axe-core lightningcss`);
+   - `npm run typecheck` (`tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit` в `worker/` и `tsc --noEmit` в `web/` с `exactOptionalPropertyTypes: true`);
+   - `npm run lint`;
+   - `REQUIRE_RUNTIME=1 npm test` (включая оба теста в `worker/test/board.runtime.test.ts` на реальном `Miniflare` и замер их фактической длительности);
    - `npm run build`;
-   - `npx playwright install chromium && npm run test:e2e` + фактический список запросов из вкладки Network.
-3. Живой сценарий на `wrangler dev`:
-   - `npm run dev` в одном окне + `npm run smoke:ws` во втором окне;
-   - одно `scene_update` -> пауза 15 секунд -> переподключение -> элемент на месте;
-   - штрих -> немедленное закрытие вкладки -> повторное открытие -> элемент на месте.
+   - `npx playwright install chromium && npm run test:e2e` + фактический список запросов браузера из вкладки Network.
+3. Живой сценарий на `wrangler dev`: `npm run dev` + `npm run smoke:ws`, пауза 15 секунд после `scene_update`, и немедленное закрытие вкладки после штриха.
 
 ---
 
-## 5. Пошаговая инструкция по деплою для владельца проекта (раздел E)
+## 5. Пошаговая инструкция по деплою для владельца проекта (раздел E и T2.5c п. 5)
 
-*(Деплой и установка секретов выполняются владельцем самостоятельно после ревью и слияния PR в `main`).*
+Строгий порядок действий для владельца: **1) секреты GitHub (`CLOUDFLARE_API_TOKEN` и `CLOUDFLARE_ACCOUNT_ID`) → 2) первый деплой (слияние PR в `main`) → 3) установка секрета `PILOT_BOARD_IDS` → 4) раздача ссылок ученикам**.
 
-1. **Создайте API-токен Cloudflare с минимальными правами**:
-   - В панели Cloudflare откройте **Profile** → **API Tokens** → **Create Token** → **Create Custom Token**.
-   - Выдайте разрешения уровня аккаунта: `Account` → `Workers Scripts: Edit` и `Account` → `Account Settings: Read` (ограничьте ресурс своим аккаунтом).
-2. **Добавьте секреты в GitHub Secrets**:
-   - В репозитории GitHub откройте **Settings** → **Secrets and variables** → **Actions** и создайте секреты `CLOUDFLARE_ACCOUNT_ID` и `CLOUDFLARE_API_TOKEN`.
-3. **Слейте PR в `main`**:
-   - После зелёного прохождения всех проверок CI слейте PR в ветку `main` — автоматически запустится workflow `.github/workflows/deploy.yml`.
-4. **Сгенерируйте 10 ID досок для пилота и сохраните их в секрет `PILOT_BOARD_IDS`**:
+1. **Создайте API-токен Cloudflare и добавьте секреты в GitHub Secrets**:
+   - В панели Cloudflare создайте токен с правами `Account -> Workers Scripts: Edit` и `Account -> Account Settings: Read`.
+   - В репозитории GitHub (`Settings -> Secrets and variables -> Actions`) сохраните секреты `CLOUDFLARE_ACCOUNT_ID` и `CLOUDFLARE_API_TOKEN`.
+2. **Выполните первый деплой (слейте PR в `main`)**:
+   - После зелёных проверок CI слейте PR в `main` — запустится `.github/workflows/deploy.yml` и создаст Worker `online-board` (пока `PILOT_BOARD_IDS` не задан, все `/ws/*` отвечают `404`, а `/api/health` отвечает `200`).
+3. **Задайте секрет `PILOT_BOARD_IDS`**:
    ```bash
    npm run gen:board-id -- 10
    cd worker
    npx wrangler secret put PILOT_BOARD_IDS
    ```
    Вставьте сгенерированные 10 ID через запятую без пробелов.
-5. **Проверьте опубликованный Worker**:
-   ```bash
-   curl https://online-board.<ваш-поддомен>.workers.dev/api/health
-   # Ожидаемый ответ: {"ok":true,"version":"0.1.0"}
-   ```
-   Откройте в браузере `https://online-board.<ваш-поддомен>.workers.dev/b/<ОДИН_ИЗ_10_ID>` для проверки работы доски.
+4. **Проверьте `/api/health` и раздайте ссылки ученикам**:
+   - Проверьте `https://online-board.<ваш-поддомен>.workers.dev/api/health` и отправьте ученикам ссылки `https://online-board.<ваш-поддомен>.workers.dev/b/<ID>`.

@@ -7,9 +7,9 @@
 ## Документация выполненных задач и ревью (`docs/`)
 
 В папке [`docs/`](./docs/) собрана полная документация всех этапов разработки, стабилизации и код-ревью:
-- [`docs/PROJECT_HISTORY.md`](./docs/PROJECT_HISTORY.md) — сводная хронологическая документация по всему проекту (`T0`, `T1`, `T2`, исправления по ревью и стабилизация `T2.5 / T2.5b`).
-- [`docs/PR_T2_5_stabilize.md`](./docs/PR_T2_5_stabilize.md) — отчёт и описание PR по задаче **T2.5 / T2.5b** («Стабилизация перед пилотом»).
-- [`docs/ANTIGRAVITY_T2_5_PROMPT.md`](./docs/ANTIGRAVITY_T2_5_PROMPT.md) — подробная инструкция и готовый промпт **T2.5b** для агента с доступом к интернету и браузеру (`npm install`, `npm ci`, E2E в Chromium, живые проверки на `wrangler dev`).
+- [`docs/PROJECT_HISTORY.md`](./docs/PROJECT_HISTORY.md) — сводная хронологическая документация по всему проекту (`T0`, `T1`, `T2`, исправления по ревью и стабилизация `T2.5 / T2.5b / T2.5c`).
+- [`docs/PR_T2_5_stabilize.md`](./docs/PR_T2_5_stabilize.md) — отчёт и описание PR по задаче **T2.5 / T2.5b / T2.5c** («Стабилизация перед пилотом»).
+- [`docs/ANTIGRAVITY_T2_5_PROMPT.md`](./docs/ANTIGRAVITY_T2_5_PROMPT.md) — подробная инструкция и готовый промпт **T2.5b + T2.5c** для агента с доступом к интернету и браузеру (`npm install`, `npm ci`, E2E в Chromium, живые проверки на `wrangler dev`).
 - [`docs/REVIEW_T2_REPORT.md`](./docs/REVIEW_T2_REPORT.md) — исходные отчёты код-ревью по задаче T2 (итерации 1 и 2).
 - [`docs/REVIEW_FIXES_REPORT.md`](./docs/REVIEW_FIXES_REPORT.md) — подробный отчёт по всем 17 пунктам ревью (12 замечаний первой итерации + 5 замечаний второй итерации).
 - [`docs/PR_T0_scaffold.md`](./docs/PR_T0_scaffold.md) — отчёт и описание PR по задаче **T0** («Каркас проекта»).
@@ -27,12 +27,12 @@
 │       ├── ci.yml                  # Проверки на каждый Pull Request (лицензии, типы, линтер, тесты с REQUIRE_RUNTIME=1, сборка)
 │       └── deploy.yml              # Проверка, сборка и деплой в Cloudflare при слиянии в main (с concurrency и REQUIRE_RUNTIME=1)
 ├── docs/
-│   ├── ANTIGRAVITY_T2_5_PROMPT.md  # Инструкция и промпт T2.5b для агента с сетью и браузером
+│   ├── ANTIGRAVITY_T2_5_PROMPT.md  # Инструкция и промпт T2.5b/T2.5c для агента с сетью и браузером
 │   ├── PR_T0_scaffold.md           # Описание PR задачи T0
 │   ├── PR_T1_board_room.md         # Описание PR задачи T1
 │   ├── PR_T2_frontend.md           # Описание PR задачи T2
-│   ├── PR_T2_5_stabilize.md        # Описание PR задачи T2.5 / T2.5b («Стабилизация перед пилотом»)
-│   ├── PROJECT_HISTORY.md          # Полная история выполненных работ (T0, T1, T2, ревью, T2.5 / T2.5b)
+│   ├── PR_T2_5_stabilize.md        # Описание PR задачи T2.5 / T2.5b / T2.5c («Стабилизация перед пилотом»)
+│   ├── PROJECT_HISTORY.md          # Полная история выполненных работ
 │   ├── REVIEW_FIXES_REPORT.md      # Подробный отчёт об исправлениях
 │   └── REVIEW_T2_REPORT.md         # Исходный отчёт код-ревью («ревью_по_доске»)
 ├── scripts/
@@ -76,7 +76,8 @@
 │   │   ├── health.test.ts          # Тесты маршрута GET /api/health и интервала SAVE_INTERVAL_MS
 │   │   └── licenses.test.ts        # Тесты фильтра лицензий
 │   ├── package.json
-│   ├── tsconfig.json
+│   ├── tsconfig.json               # Проверка типов src/ строго против @cloudflare/workers-types
+│   ├── tsconfig.test.json          # Проверка типов test/ против @cloudflare/workers-types и node
 │   ├── vitest.config.ts
 │   └── wrangler.toml               # Конфигурация Wrangler (Static Assets, Durable Object, переменные, шаблон D1)
 ├── .dev.vars.example               # Пример локальных переменных разработки (SAVE_INTERVAL_MS=5000, ALLOW_ANY_BOARD_ID)
@@ -151,28 +152,19 @@ npm run dev
 | `npm run typecheck` | Запускает строгую проверку типов TypeScript (`tsc --noEmit` с `exactOptionalPropertyTypes: true`) во всех пакетах (`web` и `worker`) |
 | `npm run check:licenses` | Проверяет лицензии всех зависимостей по `package-lock.json` и `node_modules` (разрешены `MIT`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `ISC`; исключения — в `license-exceptions.json`) |
 
-## Доступ к доскам на пилоте (`PILOT_BOARD_IDS`) и выдача ссылок ученикам
+## Как владельцу восстановить данные из `snapshot_backup` при повреждении снимка
 
-В продакшене (`worker/wrangler.toml`) установлен флаг `ALLOW_ANY_BOARD_ID = "false"`, чтобы никто посторонний не мог создавать произвольные комнаты Durable Objects и расходовать бесплатную дневную квоту Cloudflare. До появления кабинета преподавателя и таблицы `boards` в D1 (задача T3) доступ к комнатам на пилоте регулируется секретом **`PILOT_BOARD_IDS`** (список до 50 разрешённых 22-символьных base62 ID через запятую). Если запрошенный ID не входит в `PILOT_BOARD_IDS`, Worker возвращает `404 Not Found`.
+Если при пробуждении Durable Object `Board` обнаруживает, что JSON снимка в таблице `snapshot` повреждён (в логах Worker появляется событие `snapshot_load_error`), объект:
+1. Автоматически копирует все повреждённые куски в резервную таблицу SQLite **`snapshot_backup (chunk_idx INTEGER PRIMARY KEY, data BLOB, backed_up_at INTEGER)`** и пишет в лог событие `snapshot_corrupted_backup_saved`.
+2. Если резервная копия записана успешно, доска стартует с чистой сценой и продолжает штатно сохранять новые изменения в `snapshot`, не блокируя урок. (Если же записать резервную копию не удалось, запись в `snapshot` блокируется, а при подключении клиенту уходит `{"type":"error","code":"board_not_saved"}` с постоянной плашкой «Доска повреждена, изменения не сохраняются. Сообщите преподавателю»).
 
-### Как сгенерировать ID досок, задать секрет и выдать ссылки ученикам:
-
-1. Сгенерируйте нужное количество случайных ID досок (например, 10 штук — по одной на каждого ученика пилота) с помощью встроенного скрипта:
-   ```bash
-   npm run gen:board-id -- 10
+Чтобы извлечь и восстановить сохранённые куски из `snapshot_backup`:
+1. В логах Cloudflare Workers (`Workers & Pages` → `online-board` → `Logs` / `wrangler tail`) найдите запись `snapshot_corrupted_backup_saved` и посмотрите поле `boardId`.
+2. Для локальной базы `wrangler dev` откройте SQLite-файл объекта в `worker/.wrangler/state/v3/do/` и выполните:
+   ```sql
+   SELECT chunk_idx, hex(data), backed_up_at FROM snapshot_backup ORDER BY chunk_idx ASC;
    ```
-   Скрипт выведет 10 строк с 22-символьными base62 ID и готовую строку через запятую. Сохраните этот список себе в заметки преподавателя (например: `Ученик Илья -> <ID_1>`, `Ученица Маша -> <ID_2>`).
-2. Запишите список ID через запятую в секрет Cloudflare Worker (выполняется владельцем из папки `worker/`):
-   ```bash
-   cd worker
-   npx wrangler secret put PILOT_BOARD_IDS
-   ```
-   Когда Wrangler попросит ввести значение секрета (`Enter a secret value:`), вставьте строку ID через запятую без пробелов (например: `AbCdEfGhIjKlMnOpQrSt12,0123456789abcdefghijkl,...`) и нажмите `Enter`.
-3. Отправьте каждому ученику его персональную ссылку вида:
-   ```text
-   https://online-board.<ваш-поддомен>.workers.dev/b/<ID_ДОСКИ_УЧЕНИКА>
-   ```
-   Ученик открывает ссылку в браузере (регистрация и пароль не нужны), вводит своё имя в диалоге «Как вас зовут на доске?» и сразу попадает на совместную доску с вами. Если ученик откроет корень сайта `/` без `/b/<id>`, он увидит подсказку «Откройте ссылку на доску, которую вам прислал преподаватель».
+3. Для облачного Durable Object временно добавьте диагностический админ-маршрут (либо используйте процедуру восстановления `POST /api/boards/:id/restore` из задачи T5), который склеивает `SELECT data FROM snapshot_backup ORDER BY chunk_idx ASC` в UTF-8 строку, исправляет обрезанный хвост JSON и загружает восстановленный `.excalidraw` обратно на доску через кнопку **«Открыть .excalidraw»**.
 
 ## Привязка базы данных Cloudflare D1 (`DB`)
 
@@ -205,50 +197,54 @@ npm run dev
 4. Включите опцию **Require status checks to pass before merging** → **Require branches to be up to date before merging** и выберите статус-проверку **`Verify (Typecheck, Lint, Test, Build, Licenses)`** из workflow `CI` (`.github/workflows/ci.yml`).
 5. Нажмите **Create** / **Save changes**.
 
-## Первый деплой, пошагово (для владельца проекта)
+## Порядок первого деплоя и выдачи ссылок на пилоте (пошагово для владельца)
 
-Деплой настроен так, чтобы при каждом слиянии Pull Request в ветку `main` GitHub сам проверял, собирал проект и публиковал его в Cloudflare через официальное действие [cloudflare/wrangler-action](https://github.com/cloudflare/wrangler-action) ([документация Cloudflare по GitHub Actions](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)).
+Строгий порядок действий при выкатке пилота: **сначала секреты GitHub (`CLOUDFLARE_API_TOKEN` и `CLOUDFLARE_ACCOUNT_ID`) → потом первый деплой (слияние PR в `main`) → потом установка секрета `PILOT_BOARD_IDS` → потом раздача ссылок ученикам**.
 
-### Шаг 1. Зарегистрируйте бесплатный аккаунт Cloudflare и активируйте поддомен `workers.dev`
+### Шаг 1. Зарегистрируйте бесплатный аккаунт Cloudflare и скопируйте `CLOUDFLARE_ACCOUNT_ID`
 
-1. Перейдите на [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up) и создайте бесплатный аккаунт (подтвердите почту). Банковская карта для бесплатного плана **Workers Free** не требуется.
-2. В левом меню панели управления откройте раздел **Compute (Workers)** → **Workers & Pages**.
-3. Если вы открываете этот раздел впервые, Cloudflare предложит выбрать бесплатный поддомен вида `<ваше-имя>.workers.dev`. Придумайте короткое имя и сохраните его — на этом поддомене будет работать ваша доска (`https://online-board.<ваше-имя>.workers.dev`).
+1. Перейдите на [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up), создайте бесплатный аккаунт и в разделе **Compute (Workers)** → **Workers & Pages** активируйте бесплатный поддомен `<ваш-поддомен>.workers.dev`.
+2. Скопируйте ваш 32-символьный **Account ID** ([инструкция Cloudflare: Find account and zone IDs](https://developers.cloudflare.com/fundamentals/setup/find-account-and-zone-ids/)).
 
-### Шаг 2. Скопируйте ваш `CLOUDFLARE_ACCOUNT_ID`
+### Шаг 2. Создайте `CLOUDFLARE_API_TOKEN` и сохраните оба секрета в GitHub Secrets
 
-1. Оставаясь в панели управления Cloudflare (в разделе **Workers & Pages** или на главной странице аккаунта), посмотрите на правую боковую панель (или адресную строку браузера: `https://dash.cloudflare.com/<32-символьный-код>/...`).
-2. Найдите поле **Account ID** (длинный код из 32 букв и цифр) и нажмите **Copy** ([инструкция Cloudflare: Find account and zone IDs](https://developers.cloudflare.com/fundamentals/setup/find-account-and-zone-ids/)). Сохраните его во временную заметку — это ваш `CLOUDFLARE_ACCOUNT_ID`.
-
-### Шаг 3. Создайте API-токен Cloudflare с минимально необходимыми правами (`CLOUDFLARE_API_TOKEN`)
-
-Создайте токен по принципу минимальных привилегий ([документация по правам и шаблонам API-токенов Cloudflare](https://developers.cloudflare.com/fundamentals/api/reference/template/) и [Workers roles and permissions](https://developers.cloudflare.com/workers/authorization/workers/)):
-
-1. В панели управления Cloudflare нажмите на значок профиля в правом верхнем углу → **Profile** → **API Tokens** (или перейдите в **Manage Account** → **Account API Tokens**).
-2. Нажмите синюю кнопку **Create Token** → **Get started** рядом с **Create Custom Token**, назовите токен `github-actions-online-board-deploy` и задайте 2 разрешения уровня аккаунта:
+1. В панели Cloudflare откройте **Profile** → **API Tokens** → **Create Token** → **Create Custom Token** ([Workers roles and permissions](https://developers.cloudflare.com/workers/authorization/workers/)).
+2. Назовите токен `github-actions-online-board-deploy` и выдайте ровно 2 разрешения уровня аккаунта:
    - `Account` — `Workers Scripts` — `Edit`
    - `Account` — `Account Settings` — `Read`
-3. В блоке **Account Resources** выберите `Include` → **ваш конкретный аккаунт**.
-4. Нажмите **Continue to summary**, затем **Create Token** и скопируйте показанный токен (никогда не вставляйте его в код репозитория или в чат с ИИ).
+3. Ограничьте **Account Resources** своим аккаунтом, создайте токен и скопируйте его (никогда не вставляйте токен в код или в чат с ИИ).
+4. В вашем приватном репозитории на GitHub откройте **Settings** → **Secrets and variables** → **Actions** → **New repository secret** и сохраните:
+   - `CLOUDFLARE_ACCOUNT_ID`
+   - `CLOUDFLARE_API_TOKEN`
 
-### Шаг 4. Сохраните секреты в настройках репозитория GitHub
+### Шаг 3. Выполните первый деплой (слейте зелёный PR в `main`)
 
-1. Откройте ваш приватный репозиторий на GitHub → **Settings** → **Secrets and variables** → **Actions**.
-2. Нажмите **New repository secret** и добавьте два секрета:
-   - `CLOUDFLARE_ACCOUNT_ID` — ваш 32-символьный Account ID из Шага 2.
-   - `CLOUDFLARE_API_TOKEN` — ваш API-токен из Шага 3.
-
-### Шаг 5. Влейте PR в `main`, задайте `PILOT_BOARD_IDS` и проверьте деплой
-
-1. После зелёного прохождения проверок CI влейте Pull Request в `main` — запустится workflow **Deploy**.
-2. Сгенерируйте 10 ID досок для пилота (`npm run gen:board-id -- 10`) и задайте секрет `PILOT_BOARD_IDS` из папки `worker/`:
-   ```bash
-   cd worker
-   npx wrangler secret put PILOT_BOARD_IDS
-   ```
-3. Проверьте эндпоинт здоровья:
+1. После того как все проверки в Pull Request прошли зелёным, слейте PR в ветку `main`.
+2. Слияние в `main` автоматически запустит `.github/workflows/deploy.yml` ([cloudflare/wrangler-action](https://github.com/cloudflare/wrangler-action)), который создаст Worker `online-board` в вашем аккаунте Cloudflare.
+3. Проверьте, что Worker отвечает:
    ```bash
    curl https://online-board.<ваш-поддомен>.workers.dev/api/health
    # Ответ: {"ok":true,"version":"0.1.0"}
    ```
-4. Откройте доску из списка `PILOT_BOARD_IDS` (`https://online-board.<ваш-поддомен>.workers.dev/b/<ВАШ_ID_ДОСКИ>`) и убедитесь во вкладке **Network** (`F12`), что все ресурсы и шрифты грузятся только с вашего домена со статусом `200`.
+   *(Обратите внимание: пока секрет `PILOT_BOARD_IDS` ещё не задан, при `ALLOW_ANY_BOARD_ID = "false"` первый деплой безопасно отвечает `404` на любые запросы к `/ws/*`).*
+
+### Шаг 4. Сгенерируйте ID досок и задайте секрет `PILOT_BOARD_IDS`
+
+1. Сгенерируйте 10 случайных 22-символьных base62 ID досок (по одной на каждого ученика пилота):
+   ```bash
+   npm run gen:board-id -- 10
+   ```
+2. Запишите список этих ID через запятую в секрет созданного Worker (из папки `worker/`):
+   ```bash
+   cd worker
+   npx wrangler secret put PILOT_BOARD_IDS
+   ```
+   Когда Wrangler запросит `Enter a secret value:`, вставьте строку ID через запятую без пробелов (`ID1,ID2,...,ID10`) и нажмите `Enter`.
+
+### Шаг 5. Раздайте персональные ссылки ученикам
+
+1. Запишите соответствие ID ученикам в свои заметки и отправьте каждому ученику его персональную ссылку:
+   ```text
+   https://online-board.<ваш-поддомен>.workers.dev/b/<ID_ДОСКИ_УЧЕНИКА>
+   ```
+2. Ученик открывает ссылку в браузере, вводит ник в диалоге «Как вас зовут на доске?» и сразу попадает на совместную доску. Во вкладке **Network** (`F12`) убедитесь, что все ресурсы и шрифты грузятся только с вашего домена со статусом `200`.

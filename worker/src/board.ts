@@ -278,6 +278,7 @@ export class Board extends DurableObject<Env> {
   private lastPersistedChunksCount = 0;
   private readonly persistedChunkDigests = new Map<number, string>();
   private snapshotCorrupted = false;
+  private snapshotSaveBlocked = false;
   private dirty = false;
   private alarmScheduled = false;
   private lastFlushAt = 0;
@@ -440,44 +441,64 @@ export class Board extends DurableObject<Env> {
     }
   }
 
+  /**
+   * Copies corrupted snapshot chunks into `snapshot_backup`.
+   * Returns `true` if the backup succeeded (allowing the board to start fresh and continue saving new edits),
+   * or `false` if the backup transaction failed (in which case saving must be blocked and clients receive
+   * `{"type":"error","code":"board_not_saved"}` on `hello`).
+   */
   private backupCorruptedSnapshotChunks(
     sql: SqlStorage,
     byteChunks: Uint8Array[],
     errorMsg: string,
-  ): void {
+  ): boolean {
     const nowMs = Date.now();
-    const runBackupTx = () => {
-      sql.exec(
-        "CREATE TABLE IF NOT EXISTS snapshot_backup (chunk_idx INTEGER PRIMARY KEY, data BLOB, backed_up_at INTEGER)",
-      );
-      for (let idx = 0; idx < byteChunks.length; idx++) {
-        const chunkData = byteChunks[idx];
-        if (chunkData) {
-          sql.exec(
-            "INSERT OR REPLACE INTO snapshot_backup (chunk_idx, data, backed_up_at) VALUES (?, ?, ?)",
-            idx,
-            chunkData,
-            nowMs,
-          );
+    try {
+      const runBackupTx = () => {
+        sql.exec(
+          "CREATE TABLE IF NOT EXISTS snapshot_backup (chunk_idx INTEGER PRIMARY KEY, data BLOB, backed_up_at INTEGER)",
+        );
+        for (let idx = 0; idx < byteChunks.length; idx++) {
+          const chunkData = byteChunks[idx];
+          if (chunkData) {
+            sql.exec(
+              "INSERT OR REPLACE INTO snapshot_backup (chunk_idx, data, backed_up_at) VALUES (?, ?, ?)",
+              idx,
+              chunkData,
+              nowMs,
+            );
+          }
         }
+      };
+
+      if (typeof this.ctx.storage.transactionSync === "function") {
+        this.ctx.storage.transactionSync(runBackupTx);
+      } else {
+        runBackupTx();
       }
-    };
 
-    if (typeof this.ctx.storage.transactionSync === "function") {
-      this.ctx.storage.transactionSync(runBackupTx);
-    } else {
-      runBackupTx();
+      console.log(
+        JSON.stringify({
+          event: "snapshot_corrupted_backup_saved",
+          boardId: this.boardId,
+          chunksBackedUp: byteChunks.length,
+          error: errorMsg,
+          timestamp: nowMs,
+        }),
+      );
+      return true;
+    } catch (backupErr) {
+      console.log(
+        JSON.stringify({
+          event: "snapshot_corrupted_backup_failed",
+          boardId: this.boardId,
+          error: backupErr instanceof Error ? backupErr.message : String(backupErr),
+          originalError: errorMsg,
+          timestamp: nowMs,
+        }),
+      );
+      return false;
     }
-
-    console.log(
-      JSON.stringify({
-        event: "snapshot_corrupted_backup_saved",
-        boardId: this.boardId,
-        chunksBackedUp: byteChunks.length,
-        error: errorMsg,
-        timestamp: nowMs,
-      }),
-    );
   }
 
   private loadSnapshotFromSqlite(): void {
@@ -538,9 +559,13 @@ export class Board extends DurableObject<Env> {
         }
       }
       this.snapshotCorrupted = false;
+      this.snapshotSaveBlocked = false;
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.snapshotCorrupted = true;
+      this.elements.clear();
+      this.elementByteLengths.clear();
+      this.totalElementsBytes = 0;
       console.log(
         JSON.stringify({
           event: "snapshot_load_error",
@@ -548,7 +573,15 @@ export class Board extends DurableObject<Env> {
           error: errorMsg,
         }),
       );
-      this.backupCorruptedSnapshotChunks(sql, byteChunks, errorMsg);
+      const backupOk = this.backupCorruptedSnapshotChunks(sql, byteChunks, errorMsg);
+      if (backupOk) {
+        // Backup succeeded: clear digests so subsequent normal flushes overwrite `snapshot` cleanly
+        this.persistedChunkDigests.clear();
+        this.snapshotSaveBlocked = false;
+      } else {
+        // Backup failed: block writes to `snapshot` so original data is not destroyed, and notify clients on `hello`
+        this.snapshotSaveBlocked = true;
+      }
     }
   }
 
@@ -577,21 +610,23 @@ export class Board extends DurableObject<Env> {
    * Flushes the current in-memory scene snapshot into the `snapshot` SQLite table
    * in a single transaction, splitting into chunks <= 900 KB (in bytes).
    *
-   * Optimizations & Safeguards (T2.5 / T2.5b):
-   * - Refuses to overwrite `snapshot` if `this.snapshotCorrupted` is set (preserving corrupted data + `snapshot_backup`).
+   * Optimizations & Safeguards (T2.5 / T2.5b / T2.5c):
+   * - Blocks writes ONLY if `this.snapshotSaveBlocked` is true (i.e. corrupted snapshot could not be backed up to `snapshot_backup`).
    * - Does NOT write `meta` rows (`board_id` or `snapshot_version`) on flush.
    * - Writes ONLY chunks whose content digest (`computeChunkDigest`) changed since the previous flush.
    * - Executes `DELETE FROM snapshot WHERE chunk_idx >= ?` ONLY when `chunks.length < this.lastPersistedChunksCount`.
+   * - Stages updated digests and chunk count in local variables inside `runTx` and commits them to `this.persistedChunkDigests`
+   *   and `this.lastPersistedChunksCount` ONLY after `transactionSync` succeeds (preventing silent data loss on rollback).
    */
   public flushSnapshot(reason: FlushReason, nowMs = Date.now()): FlushStats | null {
     if (!this.dirty) {
       return null;
     }
 
-    if (this.snapshotCorrupted) {
+    if (this.snapshotSaveBlocked) {
       console.log(
         JSON.stringify({
-          event: "snapshot_flush_skipped_corrupted",
+          event: "snapshot_flush_skipped_backup_failed",
           boardId: this.boardId,
           reason,
           timestamp: nowMs,
@@ -624,11 +659,19 @@ export class Board extends DurableObject<Env> {
     }
 
     let rowsWrittenInFlush = 0;
+    let stagedSchemaInitialized = this.schemaInitialized;
+    let stagedChunksCount = this.lastPersistedChunksCount;
+    let stagedDigests = new Map<number, string>(this.persistedChunkDigests);
 
     const runTx = () => {
-      if (!this.schemaInitialized) {
+      rowsWrittenInFlush = 0;
+      stagedSchemaInitialized = this.schemaInitialized;
+      stagedChunksCount = this.lastPersistedChunksCount;
+      stagedDigests = new Map<number, string>(this.persistedChunkDigests);
+
+      if (!stagedSchemaInitialized) {
         sql.exec("CREATE TABLE IF NOT EXISTS snapshot (chunk_idx INTEGER PRIMARY KEY, data BLOB)");
-        this.schemaInitialized = true;
+        stagedSchemaInitialized = true;
       }
 
       for (let idx = 0; idx < chunks.length; idx++) {
@@ -646,7 +689,7 @@ export class Board extends DurableObject<Env> {
           chunkData,
         );
         rowsWrittenInFlush += cChunk.rowsWritten ?? 1;
-        this.persistedChunkDigests.set(idx, nextDigest);
+        stagedDigests.set(idx, nextDigest);
       }
 
       // Only execute DELETE when the new snapshot has strictly fewer chunks than previously persisted
@@ -654,16 +697,24 @@ export class Board extends DurableObject<Env> {
         const cDel = sql.exec("DELETE FROM snapshot WHERE chunk_idx >= ?", chunks.length);
         rowsWrittenInFlush += cDel.rowsWritten ?? 0;
         for (let idx = chunks.length; idx < this.lastPersistedChunksCount; idx++) {
-          this.persistedChunkDigests.delete(idx);
+          stagedDigests.delete(idx);
         }
       }
-      this.lastPersistedChunksCount = chunks.length;
+      stagedChunksCount = chunks.length;
     };
 
     if (typeof this.ctx.storage.transactionSync === "function") {
       this.ctx.storage.transactionSync(runTx);
     } else {
       runTx();
+    }
+
+    // Apply staged state ONLY after the SQLite transaction has succeeded without throwing (T2.5c section 1)
+    this.schemaInitialized = stagedSchemaInitialized;
+    this.lastPersistedChunksCount = stagedChunksCount;
+    this.persistedChunkDigests.clear();
+    for (const [k, v] of stagedDigests.entries()) {
+      this.persistedChunkDigests.set(k, v);
     }
 
     this.dirty = false;
@@ -981,6 +1032,10 @@ export class Board extends DurableObject<Env> {
           collaborators: this.getCollaborators(),
         });
         ws.send(snapshotMsg);
+
+        if (this.snapshotSaveBlocked) {
+          ws.send(JSON.stringify({ type: "error", code: "board_not_saved" }));
+        }
         return;
       }
 
@@ -1273,6 +1328,7 @@ export class Board extends DurableObject<Env> {
       dirty: this.dirty,
       alarmScheduled: this.alarmScheduled,
       snapshotCorrupted: this.snapshotCorrupted,
+      snapshotSaveBlocked: this.snapshotSaveBlocked,
     };
   }
 }
