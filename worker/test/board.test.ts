@@ -28,12 +28,15 @@ async function connectClient(
   });
   const res = await worker.fetch(req, harness.env);
   const { board, state } = harness.getInstance(boardId);
-  const clientSocket = (res as unknown as { webSocket?: MockSocket }).webSocket!;
-  const serverSocket = clientSocket?.peer as unknown as WebSocket;
+  const clientSocket = (res as unknown as { webSocket?: MockSocket }).webSocket;
+  if (!clientSocket || !clientSocket.peer) {
+    throw new Error("Expected upgraded MockSocket pair");
+  }
+  const serverSocket = clientSocket.peer as unknown as WebSocket;
   return { res, clientSocket, serverSocket, board, state };
 }
 
-describe("Task T1 & T2.5: Board Room Durable Object, Pilot Access Control, and SQLite Persistence", () => {
+describe("Task T1, T2.5 & T2.5b: Board Room Durable Object, Pilot Access Control, and SQLite Persistence", () => {
   it("validates GET /ws/:id?nick=<ник> and enforces ALLOW_ANY_BOARD_ID vs PILOT_BOARD_IDS", async () => {
     const harness = createBoardTestHarness(Board);
 
@@ -116,16 +119,18 @@ describe("Task T1 & T2.5: Board Room Durable Object, Pilot Access Control, and S
       expect(id).toMatch(/^[0-9A-Za-z]{22}$/);
     }
 
+    const firstId = generated50[0] ?? "";
+    const fiftiethId = generated50[49] ?? "";
     const extra51st = generateBoardId();
     const csvWith51 = [...generated50, extra51st].join(",");
     const parsedSet = parsePilotBoardIds(csvWith51);
     expect(parsedSet.size).toBe(50);
-    expect(parsedSet.has(generated50[0]!)).toBe(true);
-    expect(parsedSet.has(generated50[49]!)).toBe(true);
+    expect(parsedSet.has(firstId)).toBe(true);
+    expect(parsedSet.has(fiftiethId)).toBe(true);
     expect(parsedSet.has(extra51st)).toBe(false);
 
     expect(
-      isBoardAccessAllowed(generated50[0]!, {
+      isBoardAccessAllowed(firstId, {
         ALLOW_ANY_BOARD_ID: "false",
         PILOT_BOARD_IDS: csvWith51,
       }),
@@ -177,7 +182,7 @@ describe("Task T1 & T2.5: Board Room Durable Object, Pilot Access Control, and S
     expect(clientA.clientSocket.sentMessages.length).toBe(0);
     expect(clientB.clientSocket.sentMessages.length).toBe(1);
 
-    const receivedByB = JSON.parse(clientB.clientSocket.sentMessages[0]!);
+    const receivedByB = JSON.parse(clientB.clientSocket.sentMessages[0] ?? "{}");
     expect(receivedByB).toEqual({
       type: "scene_update",
       client_id: "c-a",
@@ -200,7 +205,7 @@ describe("Task T1 & T2.5: Board Room Durable Object, Pilot Access Control, and S
 
     expect(clientA.clientSocket.sentMessages.length).toBe(0);
     expect(clientB.clientSocket.sentMessages.length).toBe(1);
-    const cursorByB = JSON.parse(clientB.clientSocket.sentMessages[0]!);
+    const cursorByB = JSON.parse(clientB.clientSocket.sentMessages[0] ?? "{}");
     expect(cursorByB).toEqual({
       type: "cursor",
       client_id: "c-a",
@@ -240,7 +245,7 @@ describe("Task T1 & T2.5: Board Room Durable Object, Pilot Access Control, and S
     );
 
     expect(clientC.clientSocket.sentMessages.length).toBe(1);
-    const snapshot = JSON.parse(clientC.clientSocket.sentMessages[0]!);
+    const snapshot = JSON.parse(clientC.clientSocket.sentMessages[0] ?? "{}");
     expect(snapshot.type).toBe("snapshot");
     expect(snapshot.elements).toEqual([elA]);
     expect(snapshot.collaborators).toEqual([
@@ -318,14 +323,14 @@ describe("Task T1 & T2.5: Board Room Durable Object, Pilot Access Control, and S
       JSON.stringify({ type: "hello", client_id: "c-b" }),
       nowMs,
     );
-    const snap = JSON.parse(clientB.clientSocket.sentMessages[0]!);
+    const snap = JSON.parse(clientB.clientSocket.sentMessages[0] ?? "{}");
     expect(snap.elements).toEqual([
       { id: "e1", version: 2, versionNonce: 300, text: "v2-300-win" },
       { id: "del-recent", version: 1, versionNonce: 20, isDeleted: true, updated: fiveDaysAgo },
     ]);
   });
 
-  it("persists chunked snapshots (<= 900 KB) to SQLite without meta writes, deletes extra chunks only when shrinking, and survives DO recreation", async () => {
+  it("persists chunked snapshots (<= 900 KB) to SQLite, writes only changed chunks (B.8), deletes extra chunks when shrinking, and survives DO recreation", async () => {
     const harness = createBoardTestHarness(Board, { SAVE_INTERVAL_MS: "1000" });
     const conn1 = await connectClient(harness, VALID_BOARD_ID, "Teacher");
 
@@ -350,14 +355,41 @@ describe("Task T1 & T2.5: Board Room Durable Object, Pilot Access Control, and S
     // Trigger alarm to flush snapshot (2 chunks = 2 rows written, 0 meta writes)
     await wokenBeforeFlush.board.alarm();
 
-    const sqlStorage = harness.storages.get(VALID_BOARD_ID)!.sql;
+    const boardStorage = harness.storages.get(VALID_BOARD_ID);
+    if (!boardStorage) {
+      throw new Error("Expected storage for board");
+    }
+    const sqlStorage = boardStorage.sql;
     expect(sqlStorage.snapshotTable.size).toBe(2);
     expect(sqlStorage.metaTable.size).toBe(0);
     expect(wokenBeforeFlush.board.getMetrics().lastFlushRowsWritten).toBe(2);
 
+    // B.8: Modify ONLY the tail element `small-2` (which lives at the end of chunk 1, leaving chunk 0 untouched).
+    // Flushing must write ONLY chunk 1 (`rowsWritten === 1`, not 2)!
+    await wokenBeforeFlush.board.webSocketMessage(
+      conn1.serverSocket,
+      JSON.stringify({
+        type: "scene_update",
+        elements: [{ id: "small-2", version: 3, versionNonce: 19, text: "updated-tail-only" }],
+      }),
+    );
+    await wokenBeforeFlush.board.alarm();
+    expect(wokenBeforeFlush.board.getMetrics().lastFlushRowsWritten).toBe(1);
+
     // Simulate Durable Object eviction and recreation on the same SQLite storage
     const recreated = await harness.recreateBoard(VALID_BOARD_ID);
     expect(recreated.board.getMetrics().elementsCount).toBe(2);
+
+    // Even after DO recreation, chunk digests are reconstructed on load: updating only `small-2` again writes 1 row!
+    await recreated.board.webSocketMessage(
+      conn1.serverSocket,
+      JSON.stringify({
+        type: "scene_update",
+        elements: [{ id: "small-2", version: 4, versionNonce: 15, text: "updated-after-recreate" }],
+      }),
+    );
+    await recreated.board.alarm();
+    expect(recreated.board.getMetrics().lastFlushRowsWritten).toBe(1);
 
     // Now replace big-1 with a small payload so snapshot fits in 1 chunk; extra chunk 1 must be deleted (1 insert + 1 delete = 2 rowsWritten)
     await recreated.board.webSocketMessage(
@@ -378,59 +410,14 @@ describe("Task T1 & T2.5: Board Room Durable Object, Pilot Access Control, and S
       conn2.serverSocket,
       JSON.stringify({ type: "hello", client_id: "student-1" }),
     );
-    const snap = JSON.parse(conn2.clientSocket.sentMessages[0]!);
+    const snap = JSON.parse(conn2.clientSocket.sentMessages[0] ?? "{}");
     expect(snap.elements).toEqual([
       { id: "big-1", version: 2, versionNonce: 5, customData: "compact" },
-      { id: "small-2", version: 2, versionNonce: 22, text: "keep-me" },
+      { id: "small-2", version: 4, versionNonce: 15, text: "updated-after-recreate" },
     ]);
   });
 
-  it("prevents data loss across 15s inactivity window by flushing at 5s before 10s WebSocket Hibernation eviction", async () => {
-    const harness = createBoardTestHarness(Board, {
-      ALLOW_ANY_BOARD_ID: "false",
-      PILOT_BOARD_IDS: VALID_BOARD_ID,
-      SAVE_INTERVAL_MS: "5000",
-    });
-    const conn = await connectClient(harness, VALID_BOARD_ID, "Преподаватель");
-    const t0 = 2_000_000;
-
-    // Single scene_update at t0, followed by 15s of complete silence
-    await conn.board.webSocketMessage(
-      conn.serverSocket,
-      JSON.stringify({
-        type: "scene_update",
-        elements: [{ id: "hibernation-safe-el", version: 1, versionNonce: 77, text: "Урок" }],
-      }),
-      t0,
-    );
-
-    const scheduledAlarm = await conn.state.storage.getAlarm();
-    expect(scheduledAlarm).toBe(t0 + 5_000);
-
-    // At t0 + 5000 ms (before Cloudflare's 10000 ms hibernation threshold), alarm fires and flushes to SQLite
-    await conn.board.alarm();
-    conn.state.storage.alarmTime = null;
-    expect(conn.board.getMetrics().dirty).toBe(false);
-    expect(conn.board.getMetrics().flushesCount).toBe(1);
-    expect(conn.board.getMetrics().lastFlushRowsWritten).toBe(1);
-
-    // At t0 + 10000 ms, Cloudflare hibernates/evicts the in-memory Durable Object instance
-    await harness.recreateBoard(VALID_BOARD_ID);
-
-    // At t0 + 15000 ms, client reconnects and sends hello -> element is intact from SQLite
-    const reconnected = await connectClient(harness, VALID_BOARD_ID, "Преподаватель");
-    await reconnected.board.webSocketMessage(
-      reconnected.serverSocket,
-      JSON.stringify({ type: "hello", client_id: "teacher-reconnected" }),
-      t0 + 15_000,
-    );
-    const snap = JSON.parse(reconnected.clientSocket.sentMessages[0]!);
-    expect(snap.elements).toEqual([
-      { id: "hibernation-safe-el", version: 1, versionNonce: 77, text: "Урок" },
-    ]);
-  });
-
-  it("flushes immediately when the last connection closes", async () => {
+  it("flushes immediately on any socket close or error if dirty (T2.5b section B.5)", async () => {
     const harness = createBoardTestHarness(Board, { SAVE_INTERVAL_MS: "5000" });
     const c1 = await connectClient(harness, VALID_BOARD_ID, "User1");
     const c2 = await connectClient(harness, VALID_BOARD_ID, "User2");
@@ -446,16 +433,113 @@ describe("Task T1 & T2.5: Board Room Durable Object, Pilot Access Control, and S
     expect(c1.board.getMetrics().flushesCount).toBe(0);
     expect(c1.board.getMetrics().dirty).toBe(true);
 
-    // Closing first connection while second is still open does NOT flush yet
-    await c1.board.webSocketClose(c1.serverSocket, 1000, "bye", true);
-    expect(c1.board.getMetrics().flushesCount).toBe(0);
-    expect(c1.board.getMetrics().dirty).toBe(true);
+    // B.5: Closing c1 while dirty immediately flushes to SQLite even if c2 is still open
+    // (because in real workerd, closing sockets may still be listed in ctx.getWebSockets())
+    await c1.board.webSocketClose(c1.serverSocket, 1000, "tab-closed", true);
+    expect(c1.board.getMetrics().flushesCount).toBe(1);
+    expect(c1.board.getMetrics().dirty).toBe(false);
+    expect(c1.state.storage.alarmTime).toBeNull();
 
-    // Closing the last connection flushes immediately to SQLite and clears alarm
-    await c2.board.webSocketClose(c2.serverSocket, 1000, "last-bye", true);
+    // Closing c2 when no longer dirty performs no extra flush
+    await c2.board.webSocketClose(c2.serverSocket, 1000, "second-bye", true);
     expect(c2.board.getMetrics().flushesCount).toBe(1);
-    expect(c2.board.getMetrics().dirty).toBe(false);
-    expect(c2.state.storage.alarmTime).toBeNull();
+  });
+
+  it("rejects scene_update with {type:'error', code:'board_too_large'} when element count or snapshot byte ceiling is exceeded (T2.5b section B.6)", async () => {
+    const harness = createBoardTestHarness(Board, {
+      MAX_BOARD_ELEMENTS: "3",
+      MAX_SNAPSHOT_BYTES: "400",
+    });
+    const client = await connectClient(harness, VALID_BOARD_ID, "Teacher");
+
+    // 1. Add 3 small elements -> succeeds
+    await client.board.webSocketMessage(
+      client.serverSocket,
+      JSON.stringify({
+        type: "scene_update",
+        elements: [
+          { id: "e1", version: 1, versionNonce: 1 },
+          { id: "e2", version: 1, versionNonce: 2 },
+          { id: "e3", version: 1, versionNonce: 3 },
+        ],
+      }),
+    );
+    expect(client.board.getMetrics().elementsCount).toBe(3);
+
+    // 2. Attempt to add a 4th element -> exceeds MAX_BOARD_ELEMENTS (3) -> rejected with board_too_large
+    client.clientSocket.sentMessages.length = 0;
+    await client.board.webSocketMessage(
+      client.serverSocket,
+      JSON.stringify({
+        type: "scene_update",
+        elements: [{ id: "e4", version: 1, versionNonce: 4 }],
+      }),
+    );
+    expect(client.board.getMetrics().elementsCount).toBe(3);
+    expect(client.clientSocket.sentMessages.length).toBe(1);
+    expect(JSON.parse(client.clientSocket.sentMessages[0] ?? "{}")).toEqual({
+      type: "error",
+      code: "board_too_large",
+    });
+
+    // 3. Attempt to update existing element `e1` with payload exceeding MAX_SNAPSHOT_BYTES (400) -> rejected with board_too_large
+    client.clientSocket.sentMessages.length = 0;
+    await client.board.webSocketMessage(
+      client.serverSocket,
+      JSON.stringify({
+        type: "scene_update",
+        elements: [{ id: "e1", version: 2, versionNonce: 5, text: "Z".repeat(500) }],
+      }),
+    );
+    expect(client.clientSocket.sentMessages.length).toBe(1);
+    expect(JSON.parse(client.clientSocket.sentMessages[0] ?? "{}")).toEqual({
+      type: "error",
+      code: "board_too_large",
+    });
+  });
+
+  it("backs up corrupted snapshot chunks to snapshot_backup and refuses to overwrite corrupted snapshot on subsequent flush (T2.5b section B.7)", async () => {
+    const harness = createBoardTestHarness(Board, { SAVE_INTERVAL_MS: "1000" });
+    const conn = await connectClient(harness, VALID_BOARD_ID, "Teacher");
+
+    await conn.board.webSocketMessage(
+      conn.serverSocket,
+      JSON.stringify({
+        type: "scene_update",
+        elements: [{ id: "valid-el", version: 1, versionNonce: 10 }],
+      }),
+    );
+    await conn.board.alarm();
+
+    const boardStorage = harness.storages.get(VALID_BOARD_ID);
+    if (!boardStorage) {
+      throw new Error("Expected storage for board");
+    }
+
+    // Corrupt chunk 0 in SQLite storage
+    const corruptedBytes = new TextEncoder().encode("{corrupted-json-payload");
+    boardStorage.sql.snapshotTable.set(0, corruptedBytes);
+
+    // Recreate DO -> loadSnapshotFromSqlite detects corruption, copies chunk 0 to snapshot_backup, and sets snapshotCorrupted = true
+    const recreated = await harness.recreateBoard(VALID_BOARD_ID);
+    expect(recreated.board.getMetrics().snapshotCorrupted).toBe(true);
+    expect(boardStorage.sql.snapshotBackupTable.size).toBe(1);
+    const backedUpChunk = boardStorage.sql.snapshotBackupTable.get(0);
+    expect(new TextDecoder().decode(backedUpChunk?.data)).toBe("{corrupted-json-payload");
+
+    // Subsequent scene_update + flush attempt must NOT overwrite the original `snapshot` table
+    await recreated.board.webSocketMessage(
+      conn.serverSocket,
+      JSON.stringify({
+        type: "scene_update",
+        elements: [{ id: "new-el", version: 1, versionNonce: 20 }],
+      }),
+    );
+    const flushResult = recreated.board.flushSnapshot("manual");
+    expect(flushResult).toBeNull();
+    expect(new TextDecoder().decode(boardStorage.sql.snapshotTable.get(0))).toBe(
+      "{corrupted-json-payload",
+    );
   });
 
   it("enforces limits: 2 MB message size, 20 max connections (code 1013), and 30 msg/s rate limit", async () => {
@@ -475,7 +559,10 @@ describe("Task T1 & T2.5: Board Room Durable Object, Pilot Access Control, and S
     expect(conn21.clientSocket.closeRecord?.code).toBe(1013);
 
     // 2. Message > 2 MB is rejected and counted in messagesDropped without crashing
-    const activeConn = openConns[0]!;
+    const activeConn = openConns[0];
+    if (!activeConn) {
+      throw new Error("Expected active connection 0");
+    }
     const oversizedMsg = JSON.stringify({
       type: "scene_update",
       elements: [
@@ -487,7 +574,10 @@ describe("Task T1 & T2.5: Board Room Durable Object, Pilot Access Control, and S
     expect(activeConn.board.getMetrics().elementsCount).toBe(0);
 
     // 3. Rate limit: 30 messages/s allowed, excess dropped & counted, sustained excess closes socket (1008)
-    const noisyConn = openConns[1]!;
+    const noisyConn = openConns[1];
+    if (!noisyConn) {
+      throw new Error("Expected active connection 1");
+    }
     const baseTime = 50_000;
     for (let i = 1; i <= 40; i++) {
       await noisyConn.board.webSocketMessage(
@@ -557,7 +647,7 @@ describe("Task T1 & T2.5: Board Room Durable Object, Pilot Access Control, and S
     expect(metrics.messagesAccepted).toBe(100);
     expect(metrics.flushesCount).toBeLessThanOrEqual(5);
     expect(metrics.flushesCount).toBeGreaterThanOrEqual(1);
-    // T2.5 optimization: every 1-chunk flush writes exactly 1 row (snapshot[0]), so 5 flushes = 5 rows total
+    // Every 1-chunk flush writes 1 row (snapshot[0]), so 5 flushes = 5 rows total
     expect(metrics.lastFlushRowsWritten).toBe(1);
     expect(metrics.totalRowsWritten).toBe(5);
   });

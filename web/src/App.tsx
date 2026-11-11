@@ -42,6 +42,10 @@ interface ExcalidrawImperativeAPILike {
   getAppState: () => Record<string, unknown>;
 }
 
+const isDevEnvironment = Boolean(
+  (import.meta as { env?: { DEV?: boolean } }).env?.DEV,
+);
+
 const wrappedReconcile: ReconcileElementsFn = (
   localElements,
   remoteElements,
@@ -67,9 +71,10 @@ export function App() {
     parseBoardRoute(window.location.pathname),
   );
 
-  // Redirect root `/` to `/b/<22-char-base62-id>` automatically for convenience
+  // Only redirect root `/` to a random `/b/<id>` in local development (`import.meta.env.DEV`).
+  // In production, `/` displays the prompt to open the board link sent by the teacher (T2.5b section B.9).
   useEffect(() => {
-    if (!routeState.matchedRoute) {
+    if (!routeState.matchedRoute && isDevEnvironment) {
       const generatedId = generateBoardId();
       const targetPath = `/b/${generatedId}`;
       window.history.replaceState(null, "", targetPath);
@@ -99,15 +104,18 @@ export function App() {
   const [collaborators, setCollaborators] = useState<CollaboratorInfo[]>([]);
   const [remoteCursors, setRemoteCursors] = useState<InterpolatedCursor[]>([]);
   const [sceneElementCount, setSceneElementCount] = useState<number>(0);
-  const [penMode, setPenMode] = useState<boolean>(true);
-  const [importError, setImportError] = useState<string | null>(null);
+  // Auto pen mode: starts off (`false`) so finger drawing works by default, automatically activates
+  // on the first stylus (`pointerType === "pen"`) contact, and remains manually toggleable (T2.5b section B.10).
+  const [penMode, setPenMode] = useState<boolean>(false);
+  const penAutoActivatedRef = useRef<boolean>(false);
+  const [bannerError, setBannerError] = useState<string | null>(null);
 
   const excalidrawApiRef = useRef<ExcalidrawImperativeAPILike | null>(null);
   const latestElementsRef = useRef<readonly ExcalidrawElementLike[]>([]);
   const latestAppStateRef = useRef<Record<string, unknown>>({
     exportEmbedScene: true,
-    penMode: true,
-    penDetected: true,
+    penMode: false,
+    penDetected: false,
     viewBackgroundColor: "#ffffff",
     scrollX: 0,
     scrollY: 0,
@@ -191,6 +199,11 @@ export function App() {
       onStatusChange: (nextStatus) => setConnectionStatus(nextStatus),
       onCollaboratorsChange: (nextCollabs) => setCollaborators(nextCollabs),
       onRemoteCursorsChange: (cursors) => setRemoteCursors(cursors),
+      onServerError: (code) => {
+        if (code === "board_too_large") {
+          setBannerError(RU_STRINGS.boardTooLargeError);
+        }
+      },
     });
 
     collabClientRef.current = client;
@@ -275,8 +288,14 @@ export function App() {
     const kind = normalizePointerKind(e.pointerType);
     activePointerKindRef.current = kind;
 
-    if (kind === "pen" && !penMode) {
+    if (kind === "pen" && !penAutoActivatedRef.current) {
+      penAutoActivatedRef.current = true;
       setPenMode(true);
+      latestAppStateRef.current = {
+        ...latestAppStateRef.current,
+        penMode: true,
+        penDetected: true,
+      };
       excalidrawApiRef.current?.updateScene({
         appState: { penMode: true, penDetected: true },
       });
@@ -290,6 +309,7 @@ export function App() {
           width: e.width,
           height: e.height,
           isPrimary: e.isPrimary,
+          target: e.target,
         },
         penMode,
       )
@@ -308,6 +328,7 @@ export function App() {
           width: e.width,
           height: e.height,
           isPrimary: e.isPrimary,
+          target: e.target,
         },
         penMode,
       )
@@ -357,13 +378,13 @@ export function App() {
       return;
     }
     if (file.size > MAX_EXCALIDRAW_FILE_BYTES) {
-      setImportError(RU_STRINGS.fileImportError);
+      setBannerError(RU_STRINGS.fileImportError);
       return;
     }
     try {
       const rawText = await file.text();
       const imported = parseExcalidrawDocument(rawText);
-      setImportError(null);
+      setBannerError(null);
 
       // Bump imported element versions so they propagate to connected peers
       const nowMs = Date.now();
@@ -389,28 +410,59 @@ export function App() {
       collabClientRef.current?.queueSceneUpdate(merged);
       collabClientRef.current?.flushSceneOnPointerRelease(merged);
     } catch {
-      setImportError(RU_STRINGS.fileImportError);
+      setBannerError(RU_STRINGS.fileImportError);
     }
   };
 
+  if (!routeState.matchedRoute) {
+    return (
+      <main className="board-error-screen" data-testid="prod-root-screen">
+        <div className="board-dialog-card">
+          <h1 className="board-dialog-title">{RU_STRINGS.openTeacherBoardLinkTitle}</h1>
+          <p className="board-dialog-subtitle">{RU_STRINGS.openTeacherBoardLinkDescription}</p>
+          {isDevEnvironment && (
+            <button
+              type="button"
+              className="board-btn board-btn-primary"
+              onClick={() => {
+                const newId = generateBoardId();
+                const nextPath = `/b/${newId}`;
+                window.history.pushState(null, "", nextPath);
+                setRouteState(parseBoardRoute(nextPath));
+              }}
+            >
+              {RU_STRINGS.createNewLocalBoardButton}
+            </button>
+          )}
+        </div>
+      </main>
+    );
+  }
+
   if (routeState.matchedRoute && !boardId) {
     return (
-      <main className="board-error-screen">
+      <main className="board-error-screen" data-testid="invalid-board-screen">
         <div className="board-dialog-card">
           <h1 className="board-dialog-title">{RU_STRINGS.invalidBoardUrlTitle}</h1>
-          <p className="board-dialog-subtitle">{RU_STRINGS.invalidBoardUrlDescription}</p>
-          <button
-            type="button"
-            className="board-btn board-btn-primary"
-            onClick={() => {
-              const newId = generateBoardId();
-              const nextPath = `/b/${newId}`;
-              window.history.pushState(null, "", nextPath);
-              setRouteState(parseBoardRoute(nextPath));
-            }}
-          >
-            {RU_STRINGS.createNewLocalBoardButton}
-          </button>
+          <p className="board-dialog-subtitle">
+            {isDevEnvironment
+              ? RU_STRINGS.invalidBoardUrlDescription
+              : RU_STRINGS.openTeacherBoardLinkDescription}
+          </p>
+          {isDevEnvironment && (
+            <button
+              type="button"
+              className="board-btn board-btn-primary"
+              onClick={() => {
+                const newId = generateBoardId();
+                const nextPath = `/b/${newId}`;
+                window.history.pushState(null, "", nextPath);
+                setRouteState(parseBoardRoute(nextPath));
+              }}
+            >
+              {RU_STRINGS.createNewLocalBoardButton}
+            </button>
+          )}
         </div>
       </main>
     );
@@ -513,9 +565,13 @@ export function App() {
         )}
       </header>
 
-      {importError && (
-        <div className="board-toast-error" role="alert">
-          {importError}
+      {bannerError && (
+        <div
+          className="board-toast-error"
+          role="alert"
+          data-testid="board-error-banner"
+        >
+          {bannerError}
         </div>
       )}
 
@@ -569,8 +625,8 @@ export function App() {
           initialData={{
             appState: {
               exportEmbedScene: true,
-              penMode: true,
-              penDetected: true,
+              penMode: false,
+              penDetected: false,
               viewBackgroundColor: "#ffffff",
             },
           }}

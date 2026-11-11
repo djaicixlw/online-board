@@ -40,7 +40,9 @@ jobs:
       - name: Lint and check formatting (ESLint + Prettier)
         run: npm run lint
 
-      - name: Run unit and integration tests (Vitest)
+      - name: Run unit and runtime integration tests (Vitest + Miniflare)
+        env:
+          REQUIRE_RUNTIME: "1"
         run: npm test
 
       - name: Build frontend static assets (web/dist) and dry-run worker

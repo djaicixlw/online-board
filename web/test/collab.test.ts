@@ -4,22 +4,19 @@ import {
   CursorInterpolator,
   loadSavedNickname,
   MAX_EXCALIDRAW_FILE_BYTES,
-  mergeSceneElements,
   NICK_STORAGE_KEY,
   parseBoardRoute,
   parseExcalidrawDocument,
   RECONNECT_BACKOFF_MS,
   sanitizeNickname,
   saveNickname,
-  serializeExcalidrawDocument,
-  VersionDiffTracker,
   type CollaboratorInfo,
   type ConnectionStatus,
   type ExcalidrawElementLike,
   type WebSocketLike,
 } from "../src/collab/index.js";
 import {
-  normalizePointerKind,
+  isExcalidrawUiTarget,
   PALM_CONTACT_SIZE_THRESHOLD_PX,
   shouldSuppressTouchOrPalmDrawing,
 } from "../src/input/pen-guard.js";
@@ -65,7 +62,15 @@ class FakeWebSocket implements WebSocketLike {
   }
 }
 
-describe("Task T2: Collab Module (throttling, batching, version diff, reconnect, cursors)", () => {
+function getSocketAt(sockets: FakeWebSocket[], index: number): FakeWebSocket {
+  const ws = sockets[index];
+  if (!ws) {
+    throw new Error(`Expected FakeWebSocket at index ${index}`);
+  }
+  return ws;
+}
+
+describe("Task T2 & T2.5b: Collab Module (throttling, batching, version diff, reconnect, cursors, board_too_large, pen-guard)", () => {
   it("does not open WebSocket connection without a valid nickname and persists board.nick in localStorage", () => {
     const store = new Map<string, string>();
     const mockStorage = {
@@ -107,7 +112,7 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
 
     expect(client.setNick(saved)).toBe(true);
     expect(sockets.length).toBe(1);
-    expect(sockets[0]!.url).toBe(
+    expect(getSocketAt(sockets, 0).url).toBe(
       `ws://localhost:8787/ws/${VALID_BOARD_ID}?nick=%D0%9C%D0%B0%D1%80%D0%B8%D1%8F`,
     );
     expect(client.getStatus()).toBe("connecting");
@@ -142,12 +147,12 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
       });
 
       client.connect();
-      const ws = sockets[0]!;
+      const ws = getSocketAt(sockets, 0);
       ws.simulateOpen();
 
       // First message sent on open is hello
       expect(ws.sent.length).toBe(1);
-      expect(JSON.parse(ws.sent[0]!)).toEqual({
+      expect(JSON.parse(ws.sent[0] ?? "{}")).toEqual({
         type: "hello",
         client_id: "client-draw",
         nick: "Антон",
@@ -174,7 +179,7 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
       client.queueSceneUpdate(localElements);
 
       expect(ws.sent.length).toBe(1);
-      const batch1 = JSON.parse(ws.sent[0]!);
+      const batch1 = JSON.parse(ws.sent[0] ?? "{}");
       expect(batch1.type).toBe("scene_update");
       // Only el-1 was sent, el-2 was filtered out by VersionDiffTracker!
       expect(batch1.elements).toEqual([{ id: "el-1", version: 2, versionNonce: 90 }]);
@@ -208,7 +213,7 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
       currentNow = 10_100;
       vi.advanceTimersByTime(100);
       expect(ws.sent.length).toBe(2);
-      expect(JSON.parse(ws.sent[1]!).elements).toEqual([
+      expect(JSON.parse(ws.sent[1] ?? "{}").elements).toEqual([
         { id: "el-1", version: 5, versionNonce: 60 },
       ]);
 
@@ -220,7 +225,7 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
       ];
       client.flushSceneOnPointerRelease(localElements);
       expect(ws.sent.length).toBe(3);
-      expect(JSON.parse(ws.sent[2]!).elements).toEqual([
+      expect(JSON.parse(ws.sent[2] ?? "{}").elements).toEqual([
         { id: "el-1", version: 6, versionNonce: 50 },
       ]);
 
@@ -254,14 +259,14 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
       });
 
       client.connect();
-      const ws = sockets[0]!;
+      const ws = getSocketAt(sockets, 0);
       ws.simulateOpen();
       ws.sent.length = 0; // clear hello
 
       // First cursor movement at t = 50_000 -> sent immediately
       client.queueCursorUpdate(100, 200, "pen", "pointer");
       expect(ws.sent.length).toBe(1);
-      expect(JSON.parse(ws.sent[0]!)).toEqual({
+      expect(JSON.parse(ws.sent[0] ?? "{}")).toEqual({
         type: "cursor",
         x: 100,
         y: 200,
@@ -288,7 +293,7 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
       currentNow = 50_310;
       vi.advanceTimersByTime(100);
       expect(ws.sent.length).toBe(3);
-      expect(JSON.parse(ws.sent[2]!)).toEqual({
+      expect(JSON.parse(ws.sent[2] ?? "{}")).toEqual({
         type: "cursor",
         x: 130,
         y: 230,
@@ -349,8 +354,9 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
 
       client.connect();
       expect(sockets.length).toBe(1);
-      sockets[0]!.simulateOpen();
-      sockets[0]!.simulateServerMessage({
+      const ws0 = getSocketAt(sockets, 0);
+      ws0.simulateOpen();
+      ws0.simulateServerMessage({
         type: "snapshot",
         elements: [{ id: "init-1", version: 1, versionNonce: 10 }],
         collaborators: [
@@ -361,7 +367,7 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
       expect(latestCollaborators.length).toBe(2);
 
       // Connection drops abnormally -> status becomes "offline" and collaborators list is cleared (Fix #11)
-      sockets[0]!.simulateClose(1006, "network drop");
+      ws0.simulateClose(1006, "network drop");
       expect(client.getStatus()).toBe("offline");
       expect(latestCollaborators.length).toBe(0);
 
@@ -380,19 +386,19 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
       expect(sockets.length).toBe(1);
       vi.advanceTimersByTime(1);
       expect(sockets.length).toBe(2);
-      sockets[1]!.simulateClose(1006, "still down");
+      getSocketAt(sockets, 1).simulateClose(1006, "still down");
 
       // Attempt 2 after 2000 ms (fails)
       vi.advanceTimersByTime(1999);
       expect(sockets.length).toBe(2);
       vi.advanceTimersByTime(1);
       expect(sockets.length).toBe(3);
-      sockets[2]!.simulateClose(1006, "still down");
+      getSocketAt(sockets, 2).simulateClose(1006, "still down");
 
       // Attempt 3 after 4000 ms (succeeds!)
       vi.advanceTimersByTime(4000);
       expect(sockets.length).toBe(4);
-      const reconnectedWs = sockets[3]!;
+      const reconnectedWs = getSocketAt(sockets, 3);
       currentNow = 110_000;
       reconnectedWs.simulateOpen();
       expect(client.getStatus()).toBe("connected");
@@ -417,7 +423,7 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
 
       // And the client automatically flushes the offline edits (init-1 v2 and offline-el v1) to the server!
       expect(reconnectedWs.sent.length).toBe(1);
-      const flushedAfterReconnect = JSON.parse(reconnectedWs.sent[0]!);
+      const flushedAfterReconnect = JSON.parse(reconnectedWs.sent[0] ?? "{}");
       expect(flushedAfterReconnect).toEqual({
         type: "scene_update",
         elements: [
@@ -436,14 +442,14 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
     }
   });
 
-  it("verifies review fixes: URIError safety (#3), multi-touch pinch/palm guard (#2), idle cursor diff (#5), unified 10Hz budget (#6), reconcile tracker (#8), and file size limits (#10)", () => {
+  it("verifies review & T2.5b fixes: URIError safety (#3), toolbar touch & multi-touch palm guard (#2 & B.10), idle cursor diff (#5), unified 10Hz budget (#6), reconcile tracker (#8), file size limits (#10), and board_too_large error (B.6)", () => {
     // Fix #3: Malformed percent-encoding in URL does not throw URIError
     const malformedRoute = parseBoardRoute("/b/%E0%A4%A");
     expect(malformedRoute.matchedRoute).toBe(true);
     expect(malformedRoute.boardId).toBeNull();
     expect(malformedRoute.rawSegment).toBe("%E0%A4%A");
 
-    // Fix #2: Multi-touch secondary finger (isPrimary: false) is allowed for two-finger zoom/pan,
+    // Fix #2 & B.10: Multi-touch secondary finger (isPrimary: false) and Excalidraw toolbar targets are never blocked,
     // and palm contact threshold is 48px
     expect(PALM_CONTACT_SIZE_THRESHOLD_PX).toBe(48);
     expect(
@@ -462,6 +468,18 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
       ),
     ).toBe(true);
 
+    // B.10: Touch on Excalidraw toolbar/UI element is never suppressed even when penMode is true
+    const fakeToolbarTarget = {
+      closest: (selector: string) => (selector.includes(".App-toolbar") ? {} : null),
+    };
+    expect(isExcalidrawUiTarget(fakeToolbarTarget)).toBe(true);
+    expect(
+      shouldSuppressTouchOrPalmDrawing(
+        { pointerType: "touch", isPrimary: true, width: 20, height: 20, target: fakeToolbarTarget },
+        true,
+      ),
+    ).toBe(false);
+
     // Fix #5 & #11: CursorInterpolator.stepWithDiff returns changed: false when idle and reports expiredClientIds
     const interpolator = new CursorInterpolator(5000);
     expect(interpolator.stepWithDiff(16, 1000)).toEqual({
@@ -474,7 +492,6 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
       { client_id: "peer-1", nick: "Дмитрий", x: 100, y: 200, pointer: "pen", tool: "laser" },
       1000,
     );
-    // Target equals current on first update -> step without expiry has changed: false after initial render
     const firstStep = interpolator.stepWithDiff(16, 1016);
     expect(firstStep.cursors.length).toBe(1);
     const secondIdleStep = interpolator.stepWithDiff(16, 1032);
@@ -486,11 +503,12 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
     expect(expiryStep.expiredClientIds).toEqual(["peer-1"]);
     expect(expiryStep.cursors.length).toBe(0);
 
-    // Fix #6: Unified 10 Hz budget suppresses duplicate cursor sends during active scene_update drawing
+    // Fix #6, #8, and B.6 (onServerError for board_too_large)
     vi.useFakeTimers();
     try {
       let currentNow = 200_000;
       const sockets: FakeWebSocket[] = [];
+      const receivedErrors: string[] = [];
       let localElements: ExcalidrawElementLike[] = [];
       const client = new BoardCollabClient({
         boardId: VALID_BOARD_ID,
@@ -507,32 +525,33 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
         onRemoteSceneApplied: (els) => {
           localElements = els;
         },
+        onServerError: (code) => {
+          receivedErrors.push(code);
+        },
       });
       client.connect();
-      const ws = sockets[0]!;
+      const ws = getSocketAt(sockets, 0);
       ws.simulateOpen();
       ws.sent.length = 0;
 
       // Active drawing sends scene_update at t = 200_000 and queues cursor at t = 200_010
       localElements = [{ id: "stroke-1", version: 1, versionNonce: 10 }];
       client.queueSceneUpdate(localElements);
-      expect(ws.sent.length).toBe(1); // scene_update sent immediately
+      expect(ws.sent.length).toBe(1);
 
       currentNow = 200_010;
       localElements = [{ id: "stroke-1", version: 2, versionNonce: 9 }];
-      client.queueSceneUpdate(localElements); // schedules scene_update for t = 200_100
-      client.queueCursorUpdate(50, 60, "pen", "pointer"); // suppressed during active drawing!
+      client.queueSceneUpdate(localElements);
+      client.queueCursorUpdate(50, 60, "pen", "pointer");
       expect(ws.sent.length).toBe(1);
 
       currentNow = 200_100;
       vi.advanceTimersByTime(100);
-      // Only the batched scene_update is sent (not a redundant cursor message in the same window)
       expect(ws.sent.length).toBe(2);
-      expect(JSON.parse(ws.sent[1]!).type).toBe("scene_update");
+      expect(JSON.parse(ws.sent[1] ?? "{}").type).toBe("scene_update");
 
       // Fix #8: VersionDiffTracker only marks remote versions that actually win in mergeSceneElements
       ws.sent.length = 0;
-      // Suppose custom reconcileElements keeps local element (v3) when remote sends older (v2)
       localElements = [{ id: "stroke-1", version: 3, versionNonce: 5 }];
       ws.simulateServerMessage({
         type: "scene_update",
@@ -540,19 +559,21 @@ describe("Task T2: Collab Module (throttling, batching, version diff, reconnect,
         nick: "Елена",
         elements: [{ id: "stroke-1", version: 2, versionNonce: 99 }],
       });
-      // Since local v3 won over remote v2, VersionDiffTracker did NOT overwrite synced version with v2;
-      // and if local element was at v3 (not yet sent), queueSceneUpdate still detects and sends v3!
       currentNow = 200_300;
       client.queueSceneUpdate(localElements);
       expect(ws.sent.length).toBe(1);
-      expect(JSON.parse(ws.sent[0]!).elements).toEqual([
+      expect(JSON.parse(ws.sent[0] ?? "{}").elements).toEqual([
         { id: "stroke-1", version: 3, versionNonce: 5 },
       ]);
+
+      // B.6: Server error {"type":"error","code":"board_too_large"} triggers onServerError
+      ws.simulateServerMessage({ type: "error", code: "board_too_large" });
+      expect(receivedErrors).toEqual(["board_too_large"]);
     } finally {
       vi.useRealTimers();
     }
 
-    // Fix #10: parseExcalidrawDocument rejects oversized files and filters out NaN/Infinity versions
+    // Fix #10: parseExcalidrawDocument rejects oversized files and filters out negative/invalid versions
     const oversizedJson = "x".repeat(MAX_EXCALIDRAW_FILE_BYTES + 10);
     expect(() => parseExcalidrawDocument(oversizedJson)).toThrow(/exceeds maximum allowed size/);
 

@@ -7,11 +7,11 @@
 ## Документация выполненных задач и ревью (`docs/`)
 
 В папке [`docs/`](./docs/) собрана полная документация всех этапов разработки, стабилизации и код-ревью:
-- [`docs/PROJECT_HISTORY.md`](./docs/PROJECT_HISTORY.md) — сводная хронологическая документация по всему проекту (`T0`, `T1`, `T2`, исправления по ревью и стабилизация `T2.5`).
-- [`docs/PR_T2_5_stabilize.md`](./docs/PR_T2_5_stabilize.md) — отчёт и описание PR по задаче **T2.5** («Стабилизация перед пилотом»: `PILOT_BOARD_IDS`, устранение гонки `alarm` и гибернации `SAVE_INTERVAL_MS=5000`, таблица записей SQLite «до и после», `board.runtime.test.ts`, защита `deploy.yml`).
-- [`docs/ANTIGRAVITY_T2_5_PROMPT.md`](./docs/ANTIGRAVITY_T2_5_PROMPT.md) — подробная пошаговая инструкция и готовый промпт для агента **Antigravity 2.0 (Gemini 3.8 Flash)** для выполнения сетевых шагов (`npm install`, `npm ci`, E2E в Chromium, деплой в Cloudflare).
+- [`docs/PROJECT_HISTORY.md`](./docs/PROJECT_HISTORY.md) — сводная хронологическая документация по всему проекту (`T0`, `T1`, `T2`, исправления по ревью и стабилизация `T2.5 / T2.5b`).
+- [`docs/PR_T2_5_stabilize.md`](./docs/PR_T2_5_stabilize.md) — отчёт и описание PR по задаче **T2.5 / T2.5b** («Стабилизация перед пилотом»).
+- [`docs/ANTIGRAVITY_T2_5_PROMPT.md`](./docs/ANTIGRAVITY_T2_5_PROMPT.md) — подробная инструкция и готовый промпт **T2.5b** для агента с доступом к интернету и браузеру (`npm install`, `npm ci`, E2E в Chromium, живые проверки на `wrangler dev`).
 - [`docs/REVIEW_T2_REPORT.md`](./docs/REVIEW_T2_REPORT.md) — исходные отчёты код-ревью по задаче T2 (итерации 1 и 2).
-- [`docs/REVIEW_FIXES_REPORT.md`](./docs/REVIEW_FIXES_REPORT.md) — подробный отчёт по всем 17 пунктам ревью (12 замечаний первой итерации + 5 замечаний второй итерации): **что, где, как, почему, зачем и когда** было исправлено.
+- [`docs/REVIEW_FIXES_REPORT.md`](./docs/REVIEW_FIXES_REPORT.md) — подробный отчёт по всем 17 пунктам ревью (12 замечаний первой итерации + 5 замечаний второй итерации).
 - [`docs/PR_T0_scaffold.md`](./docs/PR_T0_scaffold.md) — отчёт и описание PR по задаче **T0** («Каркас проекта»).
 - [`docs/PR_T1_board_room.md`](./docs/PR_T1_board_room.md) — отчёт и описание PR по задаче **T1** («Комната доски», Durable Object `Board` на SQLite).
 - [`docs/PR_T2_frontend.md`](./docs/PR_T2_frontend.md) — отчёт и описание PR по задаче **T2** («Фронтенд доски»).
@@ -24,23 +24,23 @@
 .
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml                  # Проверки на каждый Pull Request (лицензии, типы, линтер, тесты, сборка)
-│       └── deploy.yml              # Проверка, сборка и деплой в Cloudflare при слиянии в main (с concurrency)
+│       ├── ci.yml                  # Проверки на каждый Pull Request (лицензии, типы, линтер, тесты с REQUIRE_RUNTIME=1, сборка)
+│       └── deploy.yml              # Проверка, сборка и деплой в Cloudflare при слиянии в main (с concurrency и REQUIRE_RUNTIME=1)
 ├── docs/
-│   ├── ANTIGRAVITY_T2_5_PROMPT.md  # Инструкция и промпт для агента Antigravity 2.0 (сетевая проверка и деплой)
+│   ├── ANTIGRAVITY_T2_5_PROMPT.md  # Инструкция и промпт T2.5b для агента с сетью и браузером
 │   ├── PR_T0_scaffold.md           # Описание PR задачи T0
 │   ├── PR_T1_board_room.md         # Описание PR задачи T1
 │   ├── PR_T2_frontend.md           # Описание PR задачи T2
-│   ├── PR_T2_5_stabilize.md        # Описание PR задачи T2.5 («Стабилизация перед пилотом»)
-│   ├── PROJECT_HISTORY.md          # Полная история выполненных работ (T0, T1, T2, ревью, T2.5)
-│   ├── REVIEW_FIXES_REPORT.md      # Подробный отчёт об исправлениях (что, где, как, почему, зачем, когда)
+│   ├── PR_T2_5_stabilize.md        # Описание PR задачи T2.5 / T2.5b («Стабилизация перед пилотом»)
+│   ├── PROJECT_HISTORY.md          # Полная история выполненных работ (T0, T1, T2, ревью, T2.5 / T2.5b)
+│   ├── REVIEW_FIXES_REPORT.md      # Подробный отчёт об исправлениях
 │   └── REVIEW_T2_REPORT.md         # Исходный отчёт код-ревью («ревью_по_доске»)
 ├── scripts/
 │   ├── check-licenses.mjs          # Скрипт проверки лицензий зависимостей (SPDX allowlist + исключения)
 │   ├── dev.mjs                     # Скрипт одновременного локального запуска web и worker
 │   ├── gen-board-id.mjs            # Генератор криптостойких 22-символьных base62 ID досок для пилота
 │   ├── mock-ws.mjs                 # Локальный WebSocket мок-сервер для автономной проверки фронтенда
-│   └── ws-smoke.mjs                # Дымовой тест совместного рисования 3 клиентов по WebSocket
+│   └── ws-smoke.mjs                # Дымовой тест 3 клиентов по WebSocket против запущенного wrangler dev (WS_SMOKE_URL)
 ├── web/                            # Фронтенд: Vite + React + TypeScript + @excalidraw/excalidraw
 │   ├── e2e/
 │   │   └── board-collab.spec.ts    # E2E-тест Playwright совместного рисования двух браузеров на /b/:id
@@ -51,7 +51,7 @@
 │   │   ├── i18n/
 │   │   │   └── ru.ts               # Русская локализация (ru-RU) и все строки интерфейса
 │   │   ├── input/
-│   │   │   └── pen-guard.ts        # Режим пера для стилуса и защита от касаний ладонью с сохранением 2-finger зума
+│   │   │   └── pen-guard.ts        # Авто-режим пера для стилуса и защита от касаний ладонью без блокировки тулбара
 │   │   ├── App.tsx                 # Полноэкранный компонент доски (/b/:id)
 │   │   ├── main.tsx                # Точка входа React (с привязкой локального EXCALIDRAW_ASSET_PATH)
 │   │   ├── styles.css              # Стили полноэкранного контейнера, шапки, плашки статуса и курсоров
@@ -64,19 +64,17 @@
 │   ├── tsconfig.json
 │   ├── vite.config.ts              # Конфигурация Vite и проксирование /api и /ws на локальный Worker
 │   └── vitest.config.ts
-├── worker/                         # Бэкенд: Cloudflare Worker (TypeScript, strict)
+├── worker/                         # Бэкенд: Cloudflare Worker (TypeScript, strict + exactOptionalPropertyTypes)
 │   ├── src/
 │   │   ├── board.ts                # Класс Durable Object «Board» (SQLite, WebSocket Hibernation, чанки <= 900 КБ)
-│   │   ├── cloudflare-workers.d.ts # Декларация модуля cloudflare:workers для строгой проверки типов
 │   │   ├── env.ts                  # Типы привязок окружения (ASSETS, BOARD, DB, PILOT_BOARD_IDS, переменные)
 │   │   └── index.ts                # Точка входа Worker (GET /api/health, GET /ws/:id и раздача статики)
 │   ├── test/
 │   │   ├── board.runtime.test.ts   # Интеграционный тест на реальной среде Workers (Miniflare + SQLite DO)
 │   │   ├── board.test.ts           # Модульные и интеграционные тесты Durable Object Board и PILOT_BOARD_IDS
-│   │   ├── cloudflare-workers-shim.ts # Тестовый харнесс SQLite + WebSocket Hibernation для Node
+│   │   ├── cloudflare-workers-shim.ts # Тестовый харнесс SQLite + WebSocket Hibernation для модульных тестов
 │   │   ├── health.test.ts          # Тесты маршрута GET /api/health и интервала SAVE_INTERVAL_MS
-│   │   ├── licenses.test.ts        # Тесты фильтра лицензий
-│   │   └── node-ambient.d.ts       # Типы встроенных модулей Node для тестов Worker
+│   │   └── licenses.test.ts        # Тесты фильтра лицензий
 │   ├── package.json
 │   ├── tsconfig.json
 │   ├── vitest.config.ts
@@ -91,7 +89,7 @@
 ├── package.json                    # Корневой манифест npm workspaces и общие скрипты
 ├── SPEC.md                         # Спецификация архитектуры, протокола и лимитов проекта
 ├── THIRD_PARTY_NOTICES.md          # Перечень прямых зависимостей, их лицензий и копирайт Excalidraw
-└── tsconfig.base.json              # Базовая конфигурация TypeScript в режиме strict
+└── tsconfig.base.json              # Базовая конфигурация TypeScript в режиме strict + exactOptionalPropertyTypes
 ```
 
 ## Как запустить локально
@@ -117,7 +115,7 @@ npm run dev
    - **Cloudflare Worker (`wrangler dev`)** на `http://localhost:8787` — обрабатывает API-запросы (например, `http://localhost:8787/api/health`) и WebSocket-комнаты досок (`/ws/:id?nick=...`) в локальном Durable Object `Board`.
    - **Vite dev-сервер (`web`)** на `http://localhost:5173` — открывает полноэкранный холст Excalidraw (`/b/:id`) на русском языке и автоматически проксирует запросы `/api/*` и `/ws/*` на локальный Worker (`127.0.0.1:8787`).
 
-### 3. Проверка работоспособности локально
+### 3. Проверка работоспособности локально (включая `smoke:ws`)
 
 - Откройте в браузере `http://localhost:5173/b/0123456789abcdefghijkl` — появится диалог выбора ника «Как вас зовут на доске?», после чего загрузится холст Excalidraw на весь экран с русским интерфейсом и установится WebSocket-соединение. Во вкладке **Network** инструментов разработчика (F12) все запросы идут только на `localhost` (0 запросов к внешним доменам и CDN).
 - Проверьте эндпоинт здоровья Worker через браузер или терминал:
@@ -125,10 +123,15 @@ npm run dev
   curl http://localhost:8787/api/health
   # Ответ: {"ok":true,"version":"0.1.0"}
   ```
-- Запустите дымовой тест совместной работы 3 клиентов по WebSocket:
-  ```bash
-  npm run smoke:ws
-  ```
+- Для запуска дымового теста совместного рисования 3 клиентов по WebSocket (`scripts/ws-smoke.mjs`):
+  1. В **первом окне терминала** запустите локальный сервер разработки:
+     ```bash
+     npm run dev
+     ```
+  2. Во **втором окне терминала** выполните дымовой тест (по умолчанию подключается к `WS_SMOKE_URL=ws://localhost:8787`):
+     ```bash
+     npm run smoke:ws
+     ```
 
 ## Список команд
 
@@ -139,13 +142,13 @@ npm run dev
 | `npm run dev` | Запускает локально одновременно `web` (Vite на `:5173`) и `worker` (Wrangler на `:8787`) одной командой |
 | `npm run gen:board-id -- 10` | Генерирует `N` (по умолчанию 1, до 50) криптостойких 22-символьных base62 ID досок (`scripts/gen-board-id.mjs`) |
 | `npm run mock:ws` | Запускает автономный WebSocket мок-сервер (`scripts/mock-ws.mjs` на `:8788`) |
-| `npm run smoke:ws` | Запускает дымовой сценарий совместного рисования 3 клиентов (`scripts/ws-smoke.mjs`) |
+| `npm run smoke:ws` | Подключается к запущенному `wrangler dev` (`WS_SMOKE_URL`, по умолчанию `ws://localhost:8787`) и проверяет совместное рисование 3 клиентов |
 | `npm run build` | Собирает статику фронтенда в `web/dist` (включая локальные шрифты Excalidraw) и проверяет сборку Worker (`wrangler deploy --dry-run`) |
-| `npm test` | Запускает все модульные и интеграционные тесты [Vitest](https://vitest.dev/) в `web` и `worker` (включая `board.runtime.test.ts`) |
+| `npm test` | Запускает модульные и интеграционные тесты [Vitest](https://vitest.dev/) в `web` и `worker` (при `REQUIRE_RUNTIME=1` требует `Miniflare` в `board.runtime.test.ts`) |
 | `npm run test:e2e` | Запускает E2E-тест двух браузеров в Playwright (`web/e2e/board-collab.spec.ts`) |
 | `npm run lint` | Проверяет весь код с помощью ESLint (`strict`) и форматирование через Prettier |
 | `npm run format` | Автоматически форматирует файлы проекта с помощью Prettier |
-| `npm run typecheck` | Запускает строгую проверку типов TypeScript (`tsc --noEmit`) во всех пакетах (`web` и `worker`) |
+| `npm run typecheck` | Запускает строгую проверку типов TypeScript (`tsc --noEmit` с `exactOptionalPropertyTypes: true`) во всех пакетах (`web` и `worker`) |
 | `npm run check:licenses` | Проверяет лицензии всех зависимостей по `package-lock.json` и `node_modules` (разрешены `MIT`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `ISC`; исключения — в `license-exceptions.json`) |
 
 ## Доступ к доскам на пилоте (`PILOT_BOARD_IDS`) и выдача ссылок ученикам
@@ -156,10 +159,10 @@ npm run dev
 
 1. Сгенерируйте нужное количество случайных ID досок (например, 10 штук — по одной на каждого ученика пилота) с помощью встроенного скрипта:
    ```bash
-   node scripts/gen-board-id.mjs 10
+   npm run gen:board-id -- 10
    ```
    Скрипт выведет 10 строк с 22-символьными base62 ID и готовую строку через запятую. Сохраните этот список себе в заметки преподавателя (например: `Ученик Илья -> <ID_1>`, `Ученица Маша -> <ID_2>`).
-2. Запишите список ID через запятую в секрет Cloudflare Worker (выполняется из папки `worker/`):
+2. Запишите список ID через запятую в секрет Cloudflare Worker (выполняется владельцем из папки `worker/`):
    ```bash
    cd worker
    npx wrangler secret put PILOT_BOARD_IDS
@@ -169,7 +172,7 @@ npm run dev
    ```text
    https://online-board.<ваш-поддомен>.workers.dev/b/<ID_ДОСКИ_УЧЕНИКА>
    ```
-   Ученик открывает ссылку в браузере (регистрация и пароль не нужны), вводит своё имя в диалоге «Как вас зовут на доске?» и сразу попадает на совместную доску с вами.
+   Ученик открывает ссылку в браузере (регистрация и пароль не нужны), вводит своё имя в диалоге «Как вас зовут на доске?» и сразу попадает на совместную доску с вами. Если ученик откроет корень сайта `/` без `/b/<id>`, он увидит подсказку «Откройте ссылку на доску, которую вам прислал преподаватель».
 
 ## Привязка базы данных Cloudflare D1 (`DB`)
 
@@ -193,20 +196,18 @@ npm run dev
 
 ## Защита ветки `main` в GitHub (Branch Protection Rules)
 
-В файле `.github/workflows/deploy.yml` настроена группа `concurrency: deploy-production` (чтобы два деплоя никогда не шли параллельно) и добавлены обязательные шаги проверки (`npm run check:licenses`, `npm run typecheck`, `npm run lint`, `npm test`) перед `npm run build` и публикацией в Cloudflare.
+В файле `.github/workflows/deploy.yml` настроена группа `concurrency: deploy-production` (чтобы два деплоя никогда не шли параллельно) и добавлены обязательные шаги проверки (`npm run check:licenses`, `npm run typecheck`, `npm run lint`, `REQUIRE_RUNTIME=1 npm test`) перед `npm run build` и публикацией в Cloudflare.
 
 Чтобы ни один Pull Request не мог быть влит в `main` до успешного прохождения всех проверок CI:
 1. Откройте репозиторий на GitHub → **Settings** → **Branches** (или **Rules** → **Rulesets**).
 2. Нажмите **Add branch protection rule** для ветки `main`.
 3. Включите опцию **Require a pull request before merging**.
-4. Включите опцию **Require status checks to pass before merging** → **Require branches to be up to date before merging** и выберите статус-проверку **`Verify (Licenses, Typecheck, Lint, Test, Build)`** из workflow `CI` (`.github/workflows/ci.yml`).
+4. Включите опцию **Require status checks to pass before merging** → **Require branches to be up to date before merging** и выберите статус-проверку **`Verify (Typecheck, Lint, Test, Build, Licenses)`** из workflow `CI` (`.github/workflows/ci.yml`).
 5. Нажмите **Create** / **Save changes**.
 
-## Первый деплой, пошагово (для человека без опыта с серверами)
+## Первый деплой, пошагово (для владельца проекта)
 
-Деплой настроен так, чтобы вам **не нужно было ничего настраивать вручную на серверах**: при каждом слиянии изменений (merge) в ветку `main` GitHub сам проверяет, собирает проект и публикует его в Cloudflare через официальное действие [cloudflare/wrangler-action](https://github.com/cloudflare/wrangler-action) ([документация Cloudflare по GitHub Actions](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)).
-
-Ниже приведена подробная пошаговая инструкция, которую нужно выполнить **один раз** при запуске проекта.
+Деплой настроен так, чтобы при каждом слиянии Pull Request в ветку `main` GitHub сам проверял, собирал проект и публиковал его в Cloudflare через официальное действие [cloudflare/wrangler-action](https://github.com/cloudflare/wrangler-action) ([документация Cloudflare по GitHub Actions](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)).
 
 ### Шаг 1. Зарегистрируйте бесплатный аккаунт Cloudflare и активируйте поддомен `workers.dev`
 
@@ -221,49 +222,33 @@ npm run dev
 
 ### Шаг 3. Создайте API-токен Cloudflare с минимально необходимыми правами (`CLOUDFLARE_API_TOKEN`)
 
-Чтобы GitHub Actions мог загружать собранный сайт и Worker в ваш аккаунт Cloudflare, но не имел лишнего доступа к другим настройкам аккаунта, создайте токен по принципу минимальных привилегий ([документация по правам и шаблонам API-токенов Cloudflare](https://developers.cloudflare.com/fundamentals/api/reference/template/) и [Workers roles and permissions](https://developers.cloudflare.com/workers/authorization/workers/)):
+Создайте токен по принципу минимальных привилегий ([документация по правам и шаблонам API-токенов Cloudflare](https://developers.cloudflare.com/fundamentals/api/reference/template/) и [Workers roles and permissions](https://developers.cloudflare.com/workers/authorization/workers/)):
 
 1. В панели управления Cloudflare нажмите на значок профиля в правом верхнем углу → **Profile** → **API Tokens** (или перейдите в **Manage Account** → **Account API Tokens**).
-2. Нажмите синюю кнопку **Create Token**.
-3. Выберите один из двух способов настройки:
-   - **Способ А (самый простой — по шаблону Cloudflare):** напротив шаблона **Edit Cloudflare Workers** нажмите **Use template**. Чтобы сузить права до минимума (так как R2 и KV мы не используем согласно разделу 3 `SPEC.md`), в списке **Permissions** вы можете удалить строки `Workers R2 Storage` и `Workers KV Storage`, оставив только:
-     - `Account` → `Workers Scripts` → `Edit` (позволяет создавать и обновлять Worker, Static Assets и привязки Durable Objects);
-     - `Account` → `Account Settings` → `Read` (нужно утилите Wrangler для проверки аккаунта при деплое);
-     - `User` → `User Details` → `Read` и `User Memberships` → `Read` (если создаёте User API Token).
-     *(Примечание: когда в задаче T3 вы будете выполнять миграции базы D1 из CI, при необходимости добавьте также `Account` → `D1` → `Edit`; для самого деплоя Worker с привязками по [документации Cloudflare](https://developers.cloudflare.com/workers/authorization/workers/#bindings) отдельных прав на D1 не требуется).*
-   - **Способ Б (через Create Custom Token):** нажмите **Get started** рядом с **Create Custom Token**, назовите токен `github-actions-online-board-deploy` и задайте ровно 2 разрешения уровня аккаунта:
-     - `Account` — `Workers Scripts` — `Edit`
-     - `Account` — `Account Settings` — `Read`
-4. В блоке **Account Resources** выберите `Include` → **ваш конкретный аккаунт** (вместо `All accounts`).
-5. В блоке **Zone Resources** (если он отображается, а своего домена пока нет) можно удалить строку Zone или оставить `All zones`, если вы планируете позже подключить свой домен.
-6. Нажмите **Continue to summary**, затем **Create Token**.
-7. **Важно:** скопируйте показанный секретный токен сразу (после закрытия страницы Cloudflare больше не покажет его целиком). Никогда не вставляйте этот токен в код или файлы репозитория!
+2. Нажмите синюю кнопку **Create Token** → **Get started** рядом с **Create Custom Token**, назовите токен `github-actions-online-board-deploy` и задайте 2 разрешения уровня аккаунта:
+   - `Account` — `Workers Scripts` — `Edit`
+   - `Account` — `Account Settings` — `Read`
+3. В блоке **Account Resources** выберите `Include` → **ваш конкретный аккаунт**.
+4. Нажмите **Continue to summary**, затем **Create Token** и скопируйте показанный токен (никогда не вставляйте его в код репозитория или в чат с ИИ).
 
 ### Шаг 4. Сохраните секреты в настройках репозитория GitHub
 
-1. Откройте ваш приватный репозиторий на GitHub в браузере.
-2. Перейдите на вкладку **Settings** (в верхнем меню репозитория).
-3. В левом боковом меню раскройте **Secrets and variables** → нажмите **Actions**.
-4. Нажмите зелёную кнопку **New repository secret** и добавьте по очереди **два секрета**:
-   - Первый секрет:
-     - **Name:** `CLOUDFLARE_ACCOUNT_ID`
-     - **Secret:** вставьте скопированный на Шаге 2 идентификатор аккаунта (32 символа) → нажмите **Add secret**.
-   - Второй секрет:
-     - **Name:** `CLOUDFLARE_API_TOKEN`
-     - **Secret:** вставьте скопированный на Шаге 3 API-токен → нажмите **Add secret**.
+1. Откройте ваш приватный репозиторий на GitHub → **Settings** → **Secrets and variables** → **Actions**.
+2. Нажмите **New repository secret** и добавьте два секрета:
+   - `CLOUDFLARE_ACCOUNT_ID` — ваш 32-символьный Account ID из Шага 2.
+   - `CLOUDFLARE_API_TOKEN` — ваш API-токен из Шага 3.
 
-### Шаг 5. Запустите и проверьте успешный деплой
+### Шаг 5. Влейте PR в `main`, задайте `PILOT_BOARD_IDS` и проверьте деплой
 
-1. Когда изменения вливаются в ветку `main` (или если вы вручную откроете вкладку **Actions** → выберете слева workflow **Deploy** → нажмёте **Run workflow** → **Run workflow**), запустится автоматическая сборка и публикация.
-2. Дождитесь зелёной галочки рядом с запуском **Deploy** во вкладке **Actions** (обычно 1–2 минуты).
-3. Раскройте шаг **Deploy Worker with Static Assets to Cloudflare** в логах GitHub Actions — в конце лога Wrangler выведет опубликованный адрес вашего приложения вида:
-   ```text
-   https://online-board.<ваш-поддомен>.workers.dev
+1. После зелёного прохождения проверок CI влейте Pull Request в `main` — запустится workflow **Deploy**.
+2. Сгенерируйте 10 ID досок для пилота (`npm run gen:board-id -- 10`) и задайте секрет `PILOT_BOARD_IDS` из папки `worker/`:
+   ```bash
+   cd worker
+   npx wrangler secret put PILOT_BOARD_IDS
    ```
-4. Задайте секрет `PILOT_BOARD_IDS` со сгенерированными ID досок (`cd worker && npx wrangler secret put PILOT_BOARD_IDS`) и проверьте работу опубликованного приложения в браузере:
-   - Откройте `https://online-board.<ваш-поддомен>.workers.dev/api/health` — вы должны увидеть ответ:
-     ```json
-     {"ok":true,"version":"0.1.0"}
-     ```
-   - Откройте доску из списка `PILOT_BOARD_IDS`: `https://online-board.<ваш-поддомен>.workers.dev/b/<ВАШ_ID_ДОСКИ>` — откроется полноэкранная доска Excalidraw на русском языке.
-   - Нажмите `F12` (инструменты разработчика) → вкладка **Network** → перезагрузите страницу (`Ctrl+R` / `Cmd+R`): убедитесь, что все скрипты, стили и шрифты загружаются только с вашего домена `online-board.<ваш-поддомен>.workers.dev` со статусом `200`, и нет ни одного обращения к сторонним доменам.
+3. Проверьте эндпоинт здоровья:
+   ```bash
+   curl https://online-board.<ваш-поддомен>.workers.dev/api/health
+   # Ответ: {"ok":true,"version":"0.1.0"}
+   ```
+4. Откройте доску из списка `PILOT_BOARD_IDS` (`https://online-board.<ваш-поддомен>.workers.dev/b/<ВАШ_ID_ДОСКИ>`) и убедитесь во вкладке **Network** (`F12`), что все ресурсы и шрифты грузятся только с вашего домена со статусом `200`.

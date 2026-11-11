@@ -8,7 +8,6 @@ export default tseslint.config(
       "**/dist/**",
       "**/.wrangler/**",
       "**/coverage/**",
-      "**/artifacts/**",
       "web/public/fonts/**",
       "web/public/excalidraw-assets/**",
     ],
@@ -19,8 +18,6 @@ export default tseslint.config(
     files: ["**/*.{ts,tsx,mts,cts}"],
     rules: {
       "@typescript-eslint/no-explicit-any": "error",
-      "@typescript-eslint/no-non-null-assertion": "off",
-      "@typescript-eslint/no-invalid-void-type": "off",
       "@typescript-eslint/no-unused-vars": [
         "error",
         {

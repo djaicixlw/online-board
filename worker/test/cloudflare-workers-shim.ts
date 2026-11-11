@@ -153,22 +153,28 @@ if (typeof globalThis.WebSocketPair === "undefined") {
 
 /**
  * In-memory SQLite storage engine simulating Durable Object's `ctx.storage.sql`
- * for `sqlite_master`, `meta`, and `snapshot` tables, including `rowsWritten` and `transactionSync`.
+ * for `sqlite_master`, `meta`, `snapshot`, and `snapshot_backup` tables, including `rowsWritten` and `transactionSync`.
  */
 export class MockSqlStorage {
   public tablesCreated = new Set<string>();
   public metaTable = new Map<string, string>();
   public snapshotTable = new Map<number, Uint8Array>();
+  public snapshotBackupTable = new Map<number, { data: Uint8Array; backedUpAt: number }>();
 
   public cloneState() {
     const snapshotCopy = new Map<number, Uint8Array>();
     for (const [k, v] of this.snapshotTable.entries()) {
       snapshotCopy.set(k, new Uint8Array(v));
     }
+    const backupCopy = new Map<number, { data: Uint8Array; backedUpAt: number }>();
+    for (const [k, v] of this.snapshotBackupTable.entries()) {
+      backupCopy.set(k, { data: new Uint8Array(v.data), backedUpAt: v.backedUpAt });
+    }
     return {
       tablesCreated: new Set(this.tablesCreated),
       metaTable: new Map(this.metaTable),
       snapshotTable: snapshotCopy,
+      snapshotBackupTable: backupCopy,
     };
   }
 
@@ -176,6 +182,7 @@ export class MockSqlStorage {
     this.tablesCreated = snapshot.tablesCreated;
     this.metaTable = snapshot.metaTable;
     this.snapshotTable = snapshot.snapshotTable;
+    this.snapshotBackupTable = snapshot.snapshotBackupTable;
   }
 
   public exec(query: string, ...bindings: unknown[]) {
@@ -185,6 +192,16 @@ export class MockSqlStorage {
     if (upper.startsWith("CREATE TABLE IF NOT EXISTS META")) {
       const existed = this.tablesCreated.has("meta");
       this.tablesCreated.add("meta");
+      return {
+        rowsRead: 0,
+        rowsWritten: existed ? 0 : 1,
+        toArray: () => [],
+      };
+    }
+
+    if (upper.startsWith("CREATE TABLE IF NOT EXISTS SNAPSHOT_BACKUP")) {
+      const existed = this.tablesCreated.has("snapshot_backup");
+      this.tablesCreated.add("snapshot_backup");
       return {
         rowsRead: 0,
         rowsWritten: existed ? 0 : 1,
@@ -251,6 +268,24 @@ export class MockSqlStorage {
         val = String(bindings[1] ?? "");
       }
       this.metaTable.set(key, val);
+      return {
+        rowsRead: 0,
+        rowsWritten: 1,
+        toArray: () => [],
+      };
+    }
+
+    if (upper.startsWith("INSERT OR REPLACE INTO SNAPSHOT_BACKUP")) {
+      const idx = Number(bindings[0]);
+      const rawData = bindings[1];
+      const backedUpAt = Number(bindings[2] ?? Date.now());
+      const bytes =
+        rawData instanceof Uint8Array
+          ? new Uint8Array(rawData)
+          : rawData instanceof ArrayBuffer
+            ? new Uint8Array(rawData)
+            : new TextEncoder().encode(String(rawData ?? ""));
+      this.snapshotBackupTable.set(idx, { data: bytes, backedUpAt });
       return {
         rowsRead: 0,
         rowsWritten: 1,
@@ -383,7 +418,7 @@ export function createBoardTestHarness(
   const instances = new Map<string, { board: Board; state: MockDurableObjectState }>();
 
   const env: Env = {
-    SAVE_INTERVAL_MS: "10000",
+    SAVE_INTERVAL_MS: "5000",
     ALLOW_ANY_BOARD_ID: "true",
     ...envOverrides,
     BOARD: {
@@ -430,7 +465,11 @@ export function createBoardTestHarness(
     getInstance(boardId: string) {
       const doId = env.BOARD.idFromName(boardId);
       env.BOARD.get(doId);
-      return instances.get(boardId)!;
+      const found = instances.get(boardId);
+      if (!found) {
+        throw new Error(`Expected Board instance for ${boardId}`);
+      }
+      return found;
     },
     /**
      * Simulates Durable Object eviction/hibernation and recreation on the same SQLite storage.

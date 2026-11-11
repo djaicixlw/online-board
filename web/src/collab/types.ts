@@ -2,9 +2,9 @@ export interface ExcalidrawElementLike {
   id: string;
   version: number;
   versionNonce: number;
-  isDeleted?: boolean;
-  updated?: number;
-  index?: string | null;
+  isDeleted?: boolean | undefined;
+  updated?: number | undefined;
+  index?: string | null | undefined;
   [key: string]: unknown;
 }
 
@@ -30,19 +30,19 @@ export interface SnapshotMessage {
 
 export interface SceneUpdateMessage {
   type: "scene_update";
-  client_id?: string;
-  nick?: string;
+  client_id?: string | undefined;
+  nick?: string | undefined;
   elements: ExcalidrawElementLike[];
 }
 
 export interface CursorMessage {
   type: "cursor";
-  client_id?: string;
-  nick?: string;
+  client_id?: string | undefined;
+  nick?: string | undefined;
   x: number;
   y: number;
-  pointer?: PointerKind;
-  tool?: CursorToolKind;
+  pointer?: PointerKind | undefined;
+  tool?: CursorToolKind | undefined;
 }
 
 export interface PingMessage {
@@ -51,6 +51,11 @@ export interface PingMessage {
 
 export interface PongMessage {
   type: "pong";
+}
+
+export interface ServerErrorMessage {
+  type: "error";
+  code: string;
 }
 
 export type ClientToServerMessage =
@@ -63,7 +68,8 @@ export type ServerToClientMessage =
   | SnapshotMessage
   | SceneUpdateMessage
   | CursorMessage
-  | PongMessage;
+  | PongMessage
+  | ServerErrorMessage;
 
 /**
  * Connection status state for the UI status banner:
@@ -80,8 +86,8 @@ export interface RemoteCursorTarget {
   nick: string;
   x: number;
   y: number;
-  pointer?: PointerKind;
-  tool?: CursorToolKind;
+  pointer?: PointerKind | undefined;
+  tool?: CursorToolKind | undefined;
 }
 
 export interface InterpolatedCursor {

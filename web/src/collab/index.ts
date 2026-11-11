@@ -55,6 +55,7 @@ export type {
   ReconcileElementsFn,
   RemoteCursorTarget,
   SceneUpdateMessage,
+  ServerErrorMessage,
   ServerToClientMessage,
   SnapshotMessage,
 } from "./types.js";

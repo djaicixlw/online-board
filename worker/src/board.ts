@@ -12,7 +12,9 @@ export const MAX_PROD_SAVE_INTERVAL_MS = 8_000;
 export const MIN_DEV_SAVE_INTERVAL_MS = 50;
 
 export const MAX_PILOT_BOARD_IDS = 50;
-export const MAX_MESSAGE_BYTES = 2 * 1024 * 1024; // 2 MiB
+export const MAX_MESSAGE_BYTES = 2 * 1024 * 1024; // 2 MiB per WebSocket message
+export const MAX_BOARD_ELEMENTS = 20_000; // Ceiling on total elements per board
+export const MAX_SNAPSHOT_BYTES = 20 * 1024 * 1024; // 20 MiB ceiling on total snapshot JSON
 export const MAX_CONNECTIONS_PER_BOARD = 20;
 export const MAX_MESSAGES_PER_SECOND = 30;
 export const SUSTAINED_RATE_LIMIT_EXCESS_THRESHOLD = 60;
@@ -27,13 +29,16 @@ const CONTROL_CHARS_REGEX = /[\u0000-\u001F\u007F-\u009F]+/g;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
+// Base wrapper overhead for `{"v":1,"elements":[]}` is 21 bytes
+const SNAPSHOT_JSON_WRAPPER_BYTES = 21;
+
 export interface ExcalidrawElementRecord {
   id: string;
   version: number;
   versionNonce: number;
-  isDeleted?: boolean;
-  is_deleted?: boolean;
-  updated?: number;
+  isDeleted?: boolean | undefined;
+  is_deleted?: boolean | undefined;
+  updated?: number | undefined;
   [key: string]: unknown;
 }
 
@@ -44,13 +49,13 @@ export interface CollaboratorInfo {
 
 export interface WebSocketAttachment {
   sessionId: string;
-  boardId?: string;
+  boardId?: string | undefined;
   clientId: string | null;
   nick: string;
   connectedAt: number;
   messagesAccepted: number;
   messagesDropped: number;
-  rejected?: boolean;
+  rejected?: boolean | undefined;
 }
 
 interface SessionRuntimeState extends WebSocketAttachment {
@@ -60,8 +65,10 @@ interface SessionRuntimeState extends WebSocketAttachment {
   closed: boolean;
 }
 
+export type FlushReason = "alarm" | "connection_close" | "last_connection_close" | "manual";
+
 export interface FlushStats {
-  reason: "alarm" | "last_connection_close" | "manual";
+  reason: FlushReason;
   messagesAccepted: number;
   messagesDropped: number;
   flushesCount: number;
@@ -153,6 +160,14 @@ export function resolveSaveIntervalMs(
   return Math.min(MAX_PROD_SAVE_INTERVAL_MS, Math.max(minAllowed, parsed));
 }
 
+function resolvePositiveLimit(rawValue: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(rawValue ?? "", 10);
+  if (Number.isNaN(parsed) || parsed < 1) {
+    return fallback;
+  }
+  return parsed;
+}
+
 /**
  * Validates that an incoming value is a well-formed Excalidraw element with id, version, and versionNonce.
  */
@@ -211,6 +226,22 @@ function toUint8Array(data: unknown): Uint8Array {
 }
 
 /**
+ * Computes a deterministic dual-hash digest + byteLength for a snapshot chunk
+ * so `flushSnapshot` only writes chunks whose content actually changed.
+ */
+export function computeChunkDigest(chunk: Uint8Array): string {
+  let fnv = 2166136261;
+  let djb = 5381;
+  for (let i = 0; i < chunk.byteLength; i++) {
+    const b = chunk[i] ?? 0;
+    fnv ^= b;
+    fnv = Math.imul(fnv, 16777619) >>> 0;
+    djb = (Math.imul(djb, 33) ^ b) >>> 0;
+  }
+  return `${chunk.byteLength}:${fnv.toString(16)}:${djb.toString(16)}`;
+}
+
+/**
  * Creates a 101 Switching Protocols Response with an attached WebSocket.
  * Uses native `new Response(null, { status: 101, webSocket })` in Cloudflare workerd,
  * with a fallback object for Node's undici Response which rejects status 101 in unit tests.
@@ -234,12 +265,19 @@ function createWebSocketUpgradeResponse(client: WebSocket): Response {
  */
 export class Board extends DurableObject<Env> {
   readonly saveIntervalMs: number;
+  readonly maxBoardElements: number;
+  readonly maxSnapshotBytes: number;
+
   private boardId = "unknown";
   private readonly elements = new Map<string, ExcalidrawElementRecord>();
+  private readonly elementByteLengths = new Map<string, number>();
+  private totalElementsBytes = 0;
   private readonly sessions = new Map<WebSocket, SessionRuntimeState>();
 
   private schemaInitialized = false;
   private lastPersistedChunksCount = 0;
+  private readonly persistedChunkDigests = new Map<number, string>();
+  private snapshotCorrupted = false;
   private dirty = false;
   private alarmScheduled = false;
   private lastFlushAt = 0;
@@ -254,6 +292,8 @@ export class Board extends DurableObject<Env> {
     super(ctx, env);
     const isDev = env.ALLOW_ANY_BOARD_ID === "true";
     this.saveIntervalMs = resolveSaveIntervalMs(env.SAVE_INTERVAL_MS, isDev);
+    this.maxBoardElements = resolvePositiveLimit(env.MAX_BOARD_ELEMENTS, MAX_BOARD_ELEMENTS);
+    this.maxSnapshotBytes = resolvePositiveLimit(env.MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_BYTES);
 
     // Configure automatic edge ping/pong response so pings do not wake hibernating Durable Objects
     if (
@@ -378,6 +418,68 @@ export class Board extends DurableObject<Env> {
     return collaborators;
   }
 
+  private estimateSnapshotBytes(elementsCount: number, totalElementBytes: number): number {
+    const commasBytes = elementsCount > 1 ? elementsCount - 1 : 0;
+    return SNAPSHOT_JSON_WRAPPER_BYTES + totalElementBytes + commasBytes;
+  }
+
+  private setElementInMemory(element: ExcalidrawElementRecord, byteLength?: number): void {
+    const computedBytes =
+      byteLength ?? textEncoder.encode(JSON.stringify(element)).byteLength;
+    const prevBytes = this.elementByteLengths.get(element.id) ?? 0;
+    this.elements.set(element.id, element);
+    this.elementByteLengths.set(element.id, computedBytes);
+    this.totalElementsBytes += computedBytes - prevBytes;
+  }
+
+  private deleteElementFromMemory(id: string): void {
+    const prevBytes = this.elementByteLengths.get(id) ?? 0;
+    if (this.elements.delete(id)) {
+      this.elementByteLengths.delete(id);
+      this.totalElementsBytes = Math.max(0, this.totalElementsBytes - prevBytes);
+    }
+  }
+
+  private backupCorruptedSnapshotChunks(
+    sql: SqlStorage,
+    byteChunks: Uint8Array[],
+    errorMsg: string,
+  ): void {
+    const nowMs = Date.now();
+    const runBackupTx = () => {
+      sql.exec(
+        "CREATE TABLE IF NOT EXISTS snapshot_backup (chunk_idx INTEGER PRIMARY KEY, data BLOB, backed_up_at INTEGER)",
+      );
+      for (let idx = 0; idx < byteChunks.length; idx++) {
+        const chunkData = byteChunks[idx];
+        if (chunkData) {
+          sql.exec(
+            "INSERT OR REPLACE INTO snapshot_backup (chunk_idx, data, backed_up_at) VALUES (?, ?, ?)",
+            idx,
+            chunkData,
+            nowMs,
+          );
+        }
+      }
+    };
+
+    if (typeof this.ctx.storage.transactionSync === "function") {
+      this.ctx.storage.transactionSync(runBackupTx);
+    } else {
+      runBackupTx();
+    }
+
+    console.log(
+      JSON.stringify({
+        event: "snapshot_corrupted_backup_saved",
+        boardId: this.boardId,
+        chunksBackedUp: byteChunks.length,
+        error: errorMsg,
+        timestamp: nowMs,
+      }),
+    );
+  }
+
   private loadSnapshotFromSqlite(): void {
     const sql = this.ctx.storage?.sql;
     if (!sql) {
@@ -397,11 +499,19 @@ export class Board extends DurableObject<Env> {
       .exec("SELECT chunk_idx, data FROM snapshot ORDER BY chunk_idx ASC")
       .toArray() as Array<{ chunk_idx: number; data: unknown }>;
     this.lastPersistedChunksCount = chunkRows.length;
+    this.persistedChunkDigests.clear();
     if (chunkRows.length === 0) {
       return;
     }
 
-    const byteChunks = chunkRows.map((row) => toUint8Array(row.data));
+    const byteChunks: Uint8Array[] = [];
+    for (let idx = 0; idx < chunkRows.length; idx++) {
+      const row = chunkRows[idx];
+      const bytes = toUint8Array(row?.data);
+      byteChunks.push(bytes);
+      this.persistedChunkDigests.set(idx, computeChunkDigest(bytes));
+    }
+
     const totalLength = byteChunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
     const combined = new Uint8Array(totalLength);
     let offset = 0;
@@ -416,22 +526,29 @@ export class Board extends DurableObject<Env> {
         v?: number;
         elements?: unknown[];
       };
-      if (parsed && Array.isArray(parsed.elements)) {
-        this.elements.clear();
-        for (const item of parsed.elements) {
-          if (isValidExcalidrawElement(item)) {
-            this.elements.set(item.id, item);
-          }
+      if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.elements)) {
+        throw new Error("Snapshot JSON does not contain an elements array");
+      }
+      this.elements.clear();
+      this.elementByteLengths.clear();
+      this.totalElementsBytes = 0;
+      for (const item of parsed.elements) {
+        if (isValidExcalidrawElement(item)) {
+          this.setElementInMemory(item);
         }
       }
+      this.snapshotCorrupted = false;
     } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.snapshotCorrupted = true;
       console.log(
         JSON.stringify({
           event: "snapshot_load_error",
           boardId: this.boardId,
-          error: err instanceof Error ? err.message : String(err),
+          error: errorMsg,
         }),
       );
+      this.backupCorruptedSnapshotChunks(sql, byteChunks, errorMsg);
     }
   }
 
@@ -449,7 +566,7 @@ export class Board extends DurableObject<Env> {
         Number.isFinite(element.updated) &&
         element.updated < cutoffMs
       ) {
-        this.elements.delete(id);
+        this.deleteElementFromMemory(id);
         pruned++;
       }
     }
@@ -460,16 +577,26 @@ export class Board extends DurableObject<Env> {
    * Flushes the current in-memory scene snapshot into the `snapshot` SQLite table
    * in a single transaction, splitting into chunks <= 900 KB (in bytes).
    *
-   * Optimization (T2.5):
-   * - Does NOT write `meta` rows (`board_id` or `snapshot_version`) on flush; `snapshot` uses
-   *   `chunk_idx INTEGER PRIMARY KEY` (ROWID alias, 1 row write per chunk without secondary index).
+   * Optimizations & Safeguards (T2.5 / T2.5b):
+   * - Refuses to overwrite `snapshot` if `this.snapshotCorrupted` is set (preserving corrupted data + `snapshot_backup`).
+   * - Does NOT write `meta` rows (`board_id` or `snapshot_version`) on flush.
+   * - Writes ONLY chunks whose content digest (`computeChunkDigest`) changed since the previous flush.
    * - Executes `DELETE FROM snapshot WHERE chunk_idx >= ?` ONLY when `chunks.length < this.lastPersistedChunksCount`.
    */
-  public flushSnapshot(
-    reason: "alarm" | "last_connection_close" | "manual",
-    nowMs = Date.now(),
-  ): FlushStats | null {
+  public flushSnapshot(reason: FlushReason, nowMs = Date.now()): FlushStats | null {
     if (!this.dirty) {
+      return null;
+    }
+
+    if (this.snapshotCorrupted) {
+      console.log(
+        JSON.stringify({
+          event: "snapshot_flush_skipped_corrupted",
+          boardId: this.boardId,
+          reason,
+          timestamp: nowMs,
+        }),
+      );
       return null;
     }
 
@@ -506,18 +633,29 @@ export class Board extends DurableObject<Env> {
 
       for (let idx = 0; idx < chunks.length; idx++) {
         const chunkData = chunks[idx];
+        if (!chunkData) {
+          continue;
+        }
+        const nextDigest = computeChunkDigest(chunkData);
+        if (this.persistedChunkDigests.get(idx) === nextDigest) {
+          continue;
+        }
         const cChunk = sql.exec(
           "INSERT OR REPLACE INTO snapshot (chunk_idx, data) VALUES (?, ?)",
           idx,
           chunkData,
         );
         rowsWrittenInFlush += cChunk.rowsWritten ?? 1;
+        this.persistedChunkDigests.set(idx, nextDigest);
       }
 
       // Only execute DELETE when the new snapshot has strictly fewer chunks than previously persisted
       if (chunks.length < this.lastPersistedChunksCount) {
         const cDel = sql.exec("DELETE FROM snapshot WHERE chunk_idx >= ?", chunks.length);
         rowsWrittenInFlush += cDel.rowsWritten ?? 0;
+        for (let idx = chunks.length; idx < this.lastPersistedChunksCount; idx++) {
+          this.persistedChunkDigests.delete(idx);
+        }
       }
       this.lastPersistedChunksCount = chunks.length;
     };
@@ -860,7 +998,11 @@ export class Board extends DurableObject<Env> {
           return;
         }
 
-        const updatedElements: ExcalidrawElementRecord[] = [];
+        // Deduplicate winning elements inside the incoming batch first and check board ceiling
+        const candidateUpdates = new Map<
+          string,
+          { element: ExcalidrawElementRecord; byteLength: number }
+        >();
         for (const rawEl of msg.elements) {
           if (!isValidExcalidrawElement(rawEl)) {
             console.log(
@@ -874,18 +1016,64 @@ export class Board extends DurableObject<Env> {
             );
             continue;
           }
-          const existing = this.elements.get(rawEl.id);
-          if (shouldReplaceElement(existing, rawEl)) {
-            this.elements.set(rawEl.id, rawEl);
-            updatedElements.push(rawEl);
+          const currentBest = candidateUpdates.get(rawEl.id)?.element ?? this.elements.get(rawEl.id);
+          if (shouldReplaceElement(currentBest, rawEl)) {
+            const elBytes = textEncoder.encode(JSON.stringify(rawEl)).byteLength;
+            candidateUpdates.set(rawEl.id, { element: rawEl, byteLength: elBytes });
           }
         }
 
-        this.writeAttachment(ws, session);
-
-        if (updatedElements.length === 0) {
+        if (candidateUpdates.size === 0) {
+          this.writeAttachment(ws, session);
           return;
         }
+
+        let prospectiveCount = this.elements.size;
+        let prospectiveElementBytes = this.totalElementsBytes;
+        for (const [id, entry] of candidateUpdates.entries()) {
+          if (!this.elements.has(id)) {
+            prospectiveCount += 1;
+          }
+          const prevBytes = this.elementByteLengths.get(id) ?? 0;
+          prospectiveElementBytes += entry.byteLength - prevBytes;
+        }
+
+        const prospectiveSnapshotBytes = this.estimateSnapshotBytes(
+          prospectiveCount,
+          prospectiveElementBytes,
+        );
+
+        if (
+          prospectiveCount > this.maxBoardElements ||
+          prospectiveSnapshotBytes > this.maxSnapshotBytes
+        ) {
+          session.messagesDropped += 1;
+          this.messagesDropped += 1;
+          this.writeAttachment(ws, session);
+          ws.send(JSON.stringify({ type: "error", code: "board_too_large" }));
+          console.log(
+            JSON.stringify({
+              event: "board_too_large_rejected",
+              boardId: this.boardId,
+              clientId: session.clientId,
+              nick: session.nick,
+              prospectiveCount,
+              maxBoardElements: this.maxBoardElements,
+              prospectiveSnapshotBytes,
+              maxSnapshotBytes: this.maxSnapshotBytes,
+              timestamp: nowMs,
+            }),
+          );
+          return;
+        }
+
+        const updatedElements: ExcalidrawElementRecord[] = [];
+        for (const entry of candidateUpdates.values()) {
+          this.setElementInMemory(entry.element, entry.byteLength);
+          updatedElements.push(entry.element);
+        }
+
+        this.writeAttachment(ws, session);
 
         this.dirty = true;
         await this.scheduleFlushAlarmIfNeeded(nowMs);
@@ -965,6 +1153,12 @@ export class Board extends DurableObject<Env> {
     }
   }
 
+  /**
+   * Closes a client session and immediately flushes any unsaved dirty state to SQLite.
+   * Per T2.5b section B.5, in the real Cloudflare Workers runtime `ctx.getWebSockets()` may
+   * still include closing sockets during `webSocketClose`, so we flush unconditionally whenever
+   * `this.dirty` is true on any socket close/error instead of waiting for `remainingActive === 0`.
+   */
   private async closeSessionInternal(
     ws: WebSocket,
     session: SessionRuntimeState,
@@ -984,14 +1178,15 @@ export class Board extends DurableObject<Env> {
       // Ignore if socket is already closed
     }
 
-    const remainingActive = this.getActiveSessions().length;
-    if (remainingActive === 0 && this.dirty) {
-      this.flushSnapshot("last_connection_close", nowMs);
+    if (this.dirty) {
+      this.flushSnapshot("connection_close", nowMs);
       if (this.alarmScheduled) {
         this.alarmScheduled = false;
         await this.ctx.storage.deleteAlarm();
       }
     }
+
+    const remainingActive = this.getActiveSessions().length;
 
     console.log(
       JSON.stringify({
@@ -1021,6 +1216,9 @@ export class Board extends DurableObject<Env> {
   ): Promise<void> {
     const session = this.getOrRestoreSession(ws);
     if (!session) {
+      if (this.dirty) {
+        this.flushSnapshot("connection_close", Date.now());
+      }
       return;
     }
     await this.closeSessionInternal(ws, session, code, reason);
@@ -1040,6 +1238,8 @@ export class Board extends DurableObject<Env> {
     );
     if (session) {
       await this.closeSessionInternal(ws, session, 1011, "WebSocket error");
+    } else if (this.dirty) {
+      this.flushSnapshot("connection_close", Date.now());
     }
   }
 
@@ -1060,6 +1260,10 @@ export class Board extends DurableObject<Env> {
       boardId: this.boardId,
       saveIntervalMs: this.saveIntervalMs,
       elementsCount: this.elements.size,
+      estimatedSnapshotBytes: this.estimateSnapshotBytes(
+        this.elements.size,
+        this.totalElementsBytes,
+      ),
       activeConnections: this.getActiveSessions().length,
       messagesAccepted: this.messagesAccepted,
       messagesDropped: this.messagesDropped,
@@ -1068,6 +1272,7 @@ export class Board extends DurableObject<Env> {
       totalRowsWritten: this.totalRowsWritten,
       dirty: this.dirty,
       alarmScheduled: this.alarmScheduled,
+      snapshotCorrupted: this.snapshotCorrupted,
     };
   }
 }

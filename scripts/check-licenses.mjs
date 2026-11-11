@@ -56,11 +56,12 @@ export function loadExceptions(exceptionsFilePath) {
       item.package.trim() === "" ||
       typeof item.license !== "string" ||
       item.license.trim() === "" ||
+      item.license.trim() === "*" ||
       typeof item.reason !== "string" ||
       item.reason.trim().length < 10
     ) {
       throw new Error(
-        `[check-licenses] Каждое исключение в license-exceptions.json обязано содержать непустые поля "package", "license" и подробное пояснение "reason" (минимум 10 символов). Найдено: ${JSON.stringify(item)}`,
+        `[check-licenses] Каждое исключение в license-exceptions.json обязано содержать точные непустые поля "package", "license" (без "*") и подробное пояснение "reason" (минимум 10 символов). Найдено: ${JSON.stringify(item)}`,
       );
     }
 
@@ -114,9 +115,6 @@ export function extractLicenseString(pkgJson) {
   return "UNKNOWN";
 }
 
-/**
- * Infers standard SPDX license from a package directory on disk when lockfile metadata omits `license`.
- */
 function inferLicenseFromPackageDir(pkgDir) {
   if (!existsSync(pkgDir)) {
     return "UNKNOWN";
@@ -133,41 +131,12 @@ function inferLicenseFromPackageDir(pkgDir) {
       // Ignore parse error
     }
   }
-
-  const candidateLicenseFiles = ["LICENSE", "LICENSE.md", "LICENSE.txt", "LICENCE", "COPYING"];
-  for (const fileName of candidateLicenseFiles) {
-    const licPath = resolve(pkgDir, fileName);
-    if (!existsSync(licPath)) {
-      continue;
-    }
-    try {
-      const text = readFileSync(licPath, "utf8");
-      if (/Permission is hereby granted, free of charge/i.test(text)) {
-        return "MIT";
-      }
-      if (/Apache License[\s\S]*Version 2\.0/i.test(text)) {
-        return "Apache-2.0";
-      }
-      if (/ISC License/i.test(text)) {
-        return "ISC";
-      }
-      if (/Redistribution and use in source and binary forms/i.test(text)) {
-        return "BSD-3-Clause";
-      }
-    } catch {
-      // Ignore read error
-    }
-  }
-
   return "UNKNOWN";
 }
 
 /**
  * Evaluates a single SPDX license expression (including compound OR / AND expressions)
  * against ALLOWED_LICENSES.
- *
- * Note: Splits on `OR` before checking `HARD_FORBIDDEN_LICENSE_TOKENS` so dual-licensed
- * packages (e.g. "BSD-3-Clause OR GPL-2.0") pass when at least one choice is in ALLOWED_LICENSES.
  */
 export function isLicenseExpressionAllowed(licenseExpr) {
   if (!licenseExpr || licenseExpr === "UNKNOWN") {
@@ -215,7 +184,7 @@ export function isPackagePermitted(pkgName, licenseStr, exceptionsMap) {
   }
 
   const exception = exceptionsMap.get(pkgName);
-  if (exception && (exception.license === licenseStr || exception.license === "*")) {
+  if (exception && exception.license === licenseStr) {
     return { ok: true, exceptionReason: exception.reason };
   }
 

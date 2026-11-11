@@ -7,7 +7,7 @@ export interface Env {
   /**
    * Static assets binding (serves files from ../web/dist).
    */
-  ASSETS?: Fetcher;
+  ASSETS?: Fetcher | undefined;
 
   /**
    * Durable Object namespace for board rooms (SQLite-backed).
@@ -18,7 +18,7 @@ export interface Env {
    * Cloudflare D1 database binding for teachers, students, and boards metadata.
    * Provisioned in task T3; optional in T0..T2.5 before D1 creation.
    */
-  DB?: D1Database;
+  DB?: D1Database | undefined;
 
   /**
    * Interval in milliseconds for persisting board snapshots to SQLite (default: "5000").
@@ -30,12 +30,22 @@ export interface Env {
    * Development-only flag ("true" in .dev.vars) allowing connections to any valid 22-char base62
    * board ID without checking PILOT_BOARD_IDS or D1 registry. Must be "false" in production.
    */
-  ALLOW_ANY_BOARD_ID?: string;
+  ALLOW_ANY_BOARD_ID?: string | undefined;
 
   /**
    * Comma-separated list of allowed 22-character base62 board IDs for the pilot deployment
    * (up to 50 IDs, configured via `wrangler secret put PILOT_BOARD_IDS`).
    * Used when ALLOW_ANY_BOARD_ID !== "true" before D1 board registry is introduced in T3.
    */
-  PILOT_BOARD_IDS?: string;
+  PILOT_BOARD_IDS?: string | undefined;
+
+  /**
+   * Optional override for maximum elements per board (default: 20000).
+   */
+  MAX_BOARD_ELEMENTS?: string | undefined;
+
+  /**
+   * Optional override for maximum serialized snapshot JSON byte size (default: 20 MiB).
+   */
+  MAX_SNAPSHOT_BYTES?: string | undefined;
 }

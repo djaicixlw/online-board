@@ -37,19 +37,20 @@ export interface BoardCollabClientOptions {
   boardId: string;
   clientId: string;
   nick: string | null;
-  wsBaseUrl?: string;
-  createWebSocket?: WebSocketFactory;
-  reconcileElements?: ReconcileElementsFn;
+  wsBaseUrl?: string | undefined;
+  createWebSocket?: WebSocketFactory | undefined;
+  reconcileElements?: ReconcileElementsFn | undefined;
   getLocalElements: () => readonly ExcalidrawElementLike[];
-  getLocalAppState?: () => Record<string, unknown>;
+  getLocalAppState?: (() => Record<string, unknown>) | undefined;
   onRemoteSceneApplied: (
     elements: ExcalidrawElementLike[],
     collaborators?: CollaboratorInfo[],
   ) => void;
-  onStatusChange?: (status: ConnectionStatus) => void;
-  onCollaboratorsChange?: (collaborators: CollaboratorInfo[]) => void;
-  onRemoteCursorsChange?: (cursors: InterpolatedCursor[]) => void;
-  now?: () => number;
+  onStatusChange?: ((status: ConnectionStatus) => void) | undefined;
+  onCollaboratorsChange?: ((collaborators: CollaboratorInfo[]) => void) | undefined;
+  onRemoteCursorsChange?: ((cursors: InterpolatedCursor[]) => void) | undefined;
+  onServerError?: ((code: string) => void) | undefined;
+  now?: (() => number) | undefined;
 }
 
 function defaultWsBaseUrl(): string {
@@ -71,7 +72,8 @@ function defaultWsBaseUrl(): string {
  * - Sends exact `'{"type":"ping"}'` string every 30 seconds.
  * - Reconnects with exponential backoff (1, 2, 4, 8, 15s); preserves local drawing while offline
  *   and reconciles + flushes pending changes upon reconnect.
- * - Switches status to `"full"` ((board room full)) and stops reconnecting on close code 1013.
+ * - Switches status to `"full"` (board room full) and stops reconnecting on close code 1013.
+ * - Surfaces server-side errors such as `{"type":"error","code":"board_too_large"}` via `onServerError`.
  */
 export class BoardCollabClient {
   private readonly boardId: string;
@@ -89,6 +91,7 @@ export class BoardCollabClient {
   private readonly onStatusChange?: (status: ConnectionStatus) => void;
   private readonly onCollaboratorsChange?: (collaborators: CollaboratorInfo[]) => void;
   private readonly onRemoteCursorsChange?: (cursors: InterpolatedCursor[]) => void;
+  private readonly onServerError?: (code: string) => void;
   private readonly now: () => number;
 
   public readonly versionTracker = new VersionDiffTracker();
@@ -147,6 +150,9 @@ export class BoardCollabClient {
     }
     if (options.onRemoteCursorsChange) {
       this.onRemoteCursorsChange = options.onRemoteCursorsChange;
+    }
+    if (options.onServerError) {
+      this.onServerError = options.onServerError;
     }
     this.now = options.now ?? (() => Date.now());
   }
@@ -540,6 +546,13 @@ export class BoardCollabClient {
     }
 
     if (parsed.type === "pong") {
+      return;
+    }
+
+    if (parsed.type === "error") {
+      if (typeof parsed.code === "string" && parsed.code.length > 0) {
+        this.onServerError?.(parsed.code);
+      }
       return;
     }
 
