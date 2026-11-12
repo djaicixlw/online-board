@@ -1,6 +1,7 @@
 import {
   CaptureUpdateAction,
   Excalidraw,
+  MainMenu,
   reconcileElements as excalidrawReconcileElements,
 } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
@@ -602,8 +603,8 @@ export function App() {
           }}
           UIOptions={{
             canvasActions: {
-              loadScene: true,
-              saveToActiveFile: true,
+              loadScene: false,
+              saveToActiveFile: false,
               export: { saveFileToDisk: true },
               changeViewBackgroundColor: true,
               clearCanvas: true,
@@ -634,7 +635,14 @@ export function App() {
               collabClientRef.current?.flushSceneOnPointerRelease(latestElementsRef.current);
             }
           }}
-        />
+        >
+          <MainMenu>
+            <MainMenu.DefaultItems.SaveAsImage />
+            <MainMenu.DefaultItems.ClearCanvas />
+            <MainMenu.DefaultItems.ToggleTheme />
+            <MainMenu.DefaultItems.ChangeCanvasBackground />
+          </MainMenu>
+        </Excalidraw>
       </div>
 
       {/* Modal dialog for entering or changing the user's board nickname */}
