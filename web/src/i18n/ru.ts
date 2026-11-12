@@ -14,8 +14,7 @@ export const RU_STRINGS = {
 
   // Production root (/) and invalid board route (/b/:id) screens
   openTeacherBoardLinkTitle: "Вход на доску по ссылке",
-  openTeacherBoardLinkDescription:
-    "Откройте ссылку на доску, которую вам прислал преподаватель",
+  openTeacherBoardLinkDescription: "Откройте ссылку на доску, которую вам прислал преподаватель",
   invalidBoardUrlTitle: "Некорректный адрес доски",
   invalidBoardUrlDescription:
     "Ссылка на доску должна иметь формат /b/<22 символа латиницы и цифр (base62)>.",
@@ -50,8 +49,7 @@ export const RU_STRINGS = {
   fileImportError: "Не удалось прочитать файл .excalidraw: проверьте формат JSON.",
   boardTooLargeError:
     "Превышен максимальный размер доски (не более 20 000 элементов или 20 МБ). Удалите лишние элементы или создайте новую доску.",
-  boardNotSavedError:
-    "Доска повреждена, изменения не сохраняются. Сообщите преподавателю",
+  boardNotSavedError: "Доска повреждена, изменения не сохраняются. Сообщите преподавателю",
   collaboratorsCountPrefix: "Участников:",
 } as const;
 

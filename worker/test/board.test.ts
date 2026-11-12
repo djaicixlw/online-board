@@ -1,15 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { generateBoardId, generateMultipleBoardIds } from "../../scripts/gen-board-id.mjs";
+import worker from "../src/index.js";
 import {
-  generateBoardId,
-  generateMultipleBoardIds,
-} from "../../scripts/gen-board-id.mjs";
-import worker, {
   Board,
   isBoardAccessAllowed,
   MAX_PILOT_BOARD_IDS,
   MAX_SNAPSHOT_CHUNK_BYTES,
   parsePilotBoardIds,
-} from "../src/index.js";
+} from "../src/board.js";
 import { createBoardTestHarness, type MockSocket } from "./cloudflare-workers-shim.js";
 
 const VALID_BOARD_ID = "AbCdEfGhIjKlMnOpQrSt12"; // 22 base62 chars
@@ -70,9 +68,12 @@ describe("Task T1, T2.5, T2.5b & T2.5c: Board Room Durable Object, Pilot Access 
     // Nick > 32 chars
     const longNick = "А".repeat(33);
     const longNickRes = await worker.fetch(
-      new Request(`http://localhost:8787/ws/${VALID_BOARD_ID}?nick=${encodeURIComponent(longNick)}`, {
-        headers: { Upgrade: "websocket" },
-      }),
+      new Request(
+        `http://localhost:8787/ws/${VALID_BOARD_ID}?nick=${encodeURIComponent(longNick)}`,
+        {
+          headers: { Upgrade: "websocket" },
+        },
+      ),
       harness.env,
     );
     expect(longNickRes.status).toBe(400);

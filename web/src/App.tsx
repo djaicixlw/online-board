@@ -26,10 +26,7 @@ import {
   type ReconcileElementsFn,
 } from "./collab/index.js";
 import { RU_LOCALE_CODE, RU_STRINGS } from "./i18n/ru.js";
-import {
-  normalizePointerKind,
-  shouldSuppressTouchOrPalmDrawing,
-} from "./input/pen-guard.js";
+import { normalizePointerKind, shouldSuppressTouchOrPalmDrawing } from "./input/pen-guard.js";
 
 interface ExcalidrawImperativeAPILike {
   updateScene: (sceneData: {
@@ -42,15 +39,9 @@ interface ExcalidrawImperativeAPILike {
   getAppState: () => Record<string, unknown>;
 }
 
-const isDevEnvironment = Boolean(
-  (import.meta as { env?: { DEV?: boolean } }).env?.DEV,
-);
+const isDevEnvironment = Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
 
-const wrappedReconcile: ReconcileElementsFn = (
-  localElements,
-  remoteElements,
-  localAppState,
-) => {
+const wrappedReconcile: ReconcileElementsFn = (localElements, remoteElements, localAppState) => {
   if (typeof excalidrawReconcileElements === "function") {
     try {
       const fn = excalidrawReconcileElements as unknown as (
@@ -67,9 +58,7 @@ const wrappedReconcile: ReconcileElementsFn = (
 };
 
 export function App() {
-  const [routeState, setRouteState] = useState(() =>
-    parseBoardRoute(window.location.pathname),
-  );
+  const [routeState, setRouteState] = useState(() => parseBoardRoute(window.location.pathname));
 
   // Only redirect root `/` to a random `/b/<id>` in local development (`import.meta.env.DEV`).
   // In production, `/` displays the prompt to open the board link sent by the teacher (T2.5b section B.9).
@@ -128,14 +117,9 @@ export function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const applyRemoteScene = useCallback(
-    (
-      mergedElements: ExcalidrawElementLike[],
-      nextCollaborators?: CollaboratorInfo[],
-    ) => {
+    (mergedElements: ExcalidrawElementLike[], nextCollaborators?: CollaboratorInfo[]) => {
       latestElementsRef.current = mergedElements;
-      setSceneElementCount(
-        mergedElements.filter((el) => el.isDeleted !== true).length,
-      );
+      setSceneElementCount(mergedElements.filter((el) => el.isDeleted !== true).length);
       const api = excalidrawApiRef.current;
       if (!api) {
         return;
@@ -153,9 +137,7 @@ export function App() {
           typeof CaptureUpdateAction === "object" &&
           "NEVER" in CaptureUpdateAction
         ) {
-          updatePayload.captureUpdate = (
-            CaptureUpdateAction as { NEVER: unknown }
-          ).NEVER;
+          updatePayload.captureUpdate = (CaptureUpdateAction as { NEVER: unknown }).NEVER;
         }
         api.updateScene(updatePayload);
         if (nextCollaborators) {
@@ -233,8 +215,10 @@ export function App() {
 
       const client = collabClientRef.current;
       if (client) {
-        const { cursors, changed, expiredClientIds } =
-          client.cursorInterpolator.stepWithDiff(dt, Date.now());
+        const { cursors, changed, expiredClientIds } = client.cursorInterpolator.stepWithDiff(
+          dt,
+          Date.now(),
+        );
         if (expiredClientIds.length > 0) {
           client.removeExpiredCollaborators(expiredClientIds);
         }
@@ -346,19 +330,11 @@ export function App() {
 
   const handleSaveExcalidrawFile = () => {
     const elements =
-      excalidrawApiRef.current?.getSceneElementsIncludingDeleted() ??
-      latestElementsRef.current;
-    const appState =
-      excalidrawApiRef.current?.getAppState() ?? latestAppStateRef.current;
+      excalidrawApiRef.current?.getSceneElementsIncludingDeleted() ?? latestElementsRef.current;
+    const appState = excalidrawApiRef.current?.getAppState() ?? latestAppStateRef.current;
     const bg =
-      typeof appState.viewBackgroundColor === "string"
-        ? appState.viewBackgroundColor
-        : "#ffffff";
-    const jsonContent = serializeExcalidrawDocument(
-      elements,
-      bg,
-      window.location.origin,
-    );
+      typeof appState.viewBackgroundColor === "string" ? appState.viewBackgroundColor : "#ffffff";
+    const jsonContent = serializeExcalidrawDocument(elements, bg, window.location.origin);
     const blob = new Blob([jsonContent], {
       type: "application/json;charset=utf-8",
     });
@@ -372,9 +348,7 @@ export function App() {
     URL.revokeObjectURL(url);
   };
 
-  const handleOpenExcalidrawFileChange = async (
-    e: React.ChangeEvent<HTMLInputElement>,
-  ) => {
+  const handleOpenExcalidrawFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) {
@@ -489,9 +463,7 @@ export function App() {
   const scrollY = typeof appState.scrollY === "number" ? appState.scrollY : 0;
   const zoomObj = appState.zoom as { value?: number } | undefined;
   const zoomValue =
-    zoomObj && typeof zoomObj.value === "number" && zoomObj.value > 0
-      ? zoomObj.value
-      : 1;
+    zoomObj && typeof zoomObj.value === "number" && zoomObj.value > 0 ? zoomObj.value : 1;
 
   return (
     <main
@@ -571,11 +543,7 @@ export function App() {
       </header>
 
       {activeErrorText && (
-        <div
-          className="board-toast-error"
-          role="alert"
-          data-testid="board-error-banner"
-        >
+        <div className="board-toast-error" role="alert" data-testid="board-error-banner">
           {activeErrorText}
         </div>
       )}
@@ -604,10 +572,7 @@ export function App() {
               >
                 <path d="M4 3l16 7-7 2-2 7-7-16z" />
               </svg>
-              <span
-                className="board-remote-cursor-nick"
-                style={{ backgroundColor: cursor.color }}
-              >
+              <span className="board-remote-cursor-nick" style={{ backgroundColor: cursor.color }}>
                 {cursor.nick}
               </span>
             </div>
@@ -649,9 +614,7 @@ export function App() {
             const typedElements = elements as unknown as readonly ExcalidrawElementLike[];
             latestElementsRef.current = typedElements;
             latestAppStateRef.current = currentAppState as unknown as Record<string, unknown>;
-            setSceneElementCount(
-              typedElements.filter((el) => el.isDeleted !== true).length,
-            );
+            setSceneElementCount(typedElements.filter((el) => el.isDeleted !== true).length);
             if (!isApplyingRemoteRef.current) {
               collabClientRef.current?.queueSceneUpdate(typedElements);
             }
@@ -660,8 +623,7 @@ export function App() {
             pointer: { x: number; y: number; tool?: CursorToolKind };
             button: "down" | "up";
           }) => {
-            const tool: CursorToolKind =
-              payload.pointer.tool === "laser" ? "laser" : "pointer";
+            const tool: CursorToolKind = payload.pointer.tool === "laser" ? "laser" : "pointer";
             collabClientRef.current?.queueCursorUpdate(
               payload.pointer.x,
               payload.pointer.y,
@@ -669,9 +631,7 @@ export function App() {
               tool,
             );
             if (payload.button === "up") {
-              collabClientRef.current?.flushSceneOnPointerRelease(
-                latestElementsRef.current,
-              );
+              collabClientRef.current?.flushSceneOnPointerRelease(latestElementsRef.current);
             }
           }}
         />

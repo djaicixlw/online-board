@@ -72,8 +72,7 @@ async function main() {
   );
 
   // 2. Client 1 draws an element -> Client 2 receives scene_update
-  const nextVersion =
-    (snap1.elements.find((el) => el.id === "rect-lesson-1")?.version ?? 1) + 1;
+  const nextVersion = (snap1.elements.find((el) => el.id === "rect-lesson-1")?.version ?? 1) + 1;
   const drawnElement = {
     id: "rect-lesson-1",
     type: "rectangle",

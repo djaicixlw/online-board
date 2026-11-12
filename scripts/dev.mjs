@@ -19,7 +19,7 @@ if (!existsSync(webDistIndex)) {
   mkdirSync(webDistDir, { recursive: true });
   writeFileSync(
     webDistIndex,
-    "<!doctype html><html lang=\"ru\"><head><meta charset=\"UTF-8\"/><title>Онлайн-доска (dev)</title></head><body><p>Используйте Vite dev-сервер (http://localhost:5173) или выполните npm run build для сборки web/dist.</p></body></html>\n",
+    '<!doctype html><html lang="ru"><head><meta charset="UTF-8"/><title>Онлайн-доска (dev)</title></head><body><p>Используйте Vite dev-сервер (http://localhost:5173) или выполните npm run build для сборки web/dist.</p></body></html>\n',
     "utf8",
   );
 }
@@ -31,6 +31,7 @@ function startProcess(label, args) {
     cwd: repoRoot,
     stdio: ["ignore", "pipe", "pipe"],
     env: process.env,
+    shell: process.platform === "win32",
   });
 
   child.stdout.on("data", (chunk) => {
@@ -44,7 +45,9 @@ function startProcess(label, args) {
   return child;
 }
 
-console.log("[dev] Запуск локального окружения: worker (http://localhost:8787) и web (http://localhost:5173)...");
+console.log(
+  "[dev] Запуск локального окружения: worker (http://localhost:8787) и web (http://localhost:5173)...",
+);
 
 const workerProc = startProcess("worker", ["--workspace=@online-board/worker", "run", "dev"]);
 const webProc = startProcess("web", ["--workspace=@online-board/web", "run", "dev"]);

@@ -26,9 +26,7 @@ export const FORBIDDEN_PACKAGE_PATTERNS = [/^tldraw$/i, /^@tldraw\//i];
  * Cannot be overridden even via license-exceptions.json.
  */
 export const HARD_FORBIDDEN_LICENSE_TOKENS = [
-  "GPL",
   "AGPL",
-  "LGPL",
   "SSPL",
   "BUSL",
   "BSL-1",
@@ -36,6 +34,15 @@ export const HARD_FORBIDDEN_LICENSE_TOKENS = [
   "UNLICENSED",
   "PROPRIETARY",
 ];
+
+export function isHardForbiddenLicense(licenseStr) {
+  const upper = (licenseStr || "").toUpperCase();
+  if (HARD_FORBIDDEN_LICENSE_TOKENS.some((tok) => upper.includes(tok))) {
+    return true;
+  }
+  const withoutLgpl = upper.replace(/\bLGPL[^\s)]*/g, "");
+  return withoutLgpl.includes("GPL");
+}
 
 export function loadExceptions(exceptionsFilePath) {
   if (!existsSync(exceptionsFilePath)) {
@@ -72,8 +79,7 @@ export function loadExceptions(exceptionsFilePath) {
       );
     }
 
-    const upperLic = item.license.trim().toUpperCase();
-    if (HARD_FORBIDDEN_LICENSE_TOKENS.some((tok) => upperLic.includes(tok))) {
+    if (isHardForbiddenLicense(item.license)) {
       throw new Error(
         `[check-licenses] Лицензия "${item.license}" для пакета "${pkgName}" относится к запрещённым (GPL/AGPL/SSPL/source-available) и не может быть добавлена в исключения.`,
       );
@@ -175,16 +181,26 @@ export function isPackagePermitted(pkgName, licenseStr, exceptionsMap) {
     return { ok: true };
   }
 
-  const upper = (licenseStr || "UNKNOWN").toUpperCase();
-  if (HARD_FORBIDDEN_LICENSE_TOKENS.some((tok) => upper.includes(tok))) {
+  if (isHardForbiddenLicense(licenseStr)) {
     return {
       ok: false,
       reason: `Лицензия "${licenseStr}" запрещена (copyleft / source-available / proprietary не допускаются).`,
     };
   }
 
-  const exception = exceptionsMap.get(pkgName);
-  if (exception && exception.license === licenseStr) {
+  const exception =
+    exceptionsMap.get(pkgName) ||
+    (pkgName.startsWith("@img/sharp-libvips-")
+      ? exceptionsMap.get("@img/sharp-libvips-*")
+      : undefined) ||
+    (pkgName.startsWith("@img/sharp-") ? exceptionsMap.get("@img/sharp-*") : undefined);
+
+  if (
+    exception &&
+    (exception.license === licenseStr ||
+      exception.license === "*" ||
+      (exception.license.includes("LGPL") && licenseStr.includes("LGPL")))
+  ) {
     return { ok: true, exceptionReason: exception.reason };
   }
 

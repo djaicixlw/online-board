@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -33,7 +34,10 @@ describe("Dependency license checker (scripts/check-licenses.mjs)", () => {
   });
 
   it("loads license-exceptions.json and permits documented transitive exceptions", () => {
-    const exceptionsPath = resolve(process.cwd(), "license-exceptions.json");
+    const directPath = resolve(process.cwd(), "license-exceptions.json");
+    const exceptionsPath = existsSync(directPath)
+      ? directPath
+      : resolve(process.cwd(), "../license-exceptions.json");
     const exceptions = loadExceptions(exceptionsPath);
     expect(exceptions.has("tslib")).toBe(true);
     const tslibCheck = isPackagePermitted("tslib", "0BSD", exceptions);

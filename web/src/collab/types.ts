@@ -58,18 +58,10 @@ export interface ServerErrorMessage {
   code: string;
 }
 
-export type ClientToServerMessage =
-  | HelloMessage
-  | SceneUpdateMessage
-  | CursorMessage
-  | PingMessage;
+export type ClientToServerMessage = HelloMessage | SceneUpdateMessage | CursorMessage | PingMessage;
 
 export type ServerToClientMessage =
-  | SnapshotMessage
-  | SceneUpdateMessage
-  | CursorMessage
-  | PongMessage
-  | ServerErrorMessage;
+  SnapshotMessage | SceneUpdateMessage | CursorMessage | PongMessage | ServerErrorMessage;
 
 /**
  * Connection status state for the UI status banner:

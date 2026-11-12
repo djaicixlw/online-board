@@ -3,6 +3,7 @@
 ## 1. Сводка изменений по пунктам T2.5, T2.5b и T2.5c
 
 ### Раздел A. Восстановление строгих проверок и разделение `tsconfig` (пункты A.1–A.4 и T2.5c п. 3)
+
 1. **`tsconfig.base.json` (`exactOptionalPropertyTypes: true`)**:
    - Возвращена опция `"exactOptionalPropertyTypes": true` в `tsconfig.base.json`.
    - Все интерфейсы в `worker/` и `web/` приведены в полное соответствие с `exactOptionalPropertyTypes: true`.
@@ -22,6 +23,7 @@
 ---
 
 ### Раздел B и T2.5c. Архитектурные и продуктовые доработки перед пилотом
+
 5. **Надёжный сброс снимка при любом закрытии или ошибке WebSocket (`worker/src/board.ts`, `closeSessionInternal`)**:
    - При любом вызове `closeSessionInternal`, `webSocketClose` или `webSocketError`, если `this.dirty === true`, сброс `this.flushSnapshot("connection_close", nowMs)` выполняется немедленно без пересчёта `remainingActive`.
 6. **Потолок размера доски (`MAX_BOARD_ELEMENTS = 20_000`, `MAX_SNAPSHOT_BYTES = 20 * 1024 * 1024`)**:
@@ -43,27 +45,28 @@
 ---
 
 ### Раздел C и T2.5c п. 4. Тесты реального рантайма (`worker/test/board.runtime.test.ts` и CI)
+
 12. **Отказ от тихого перехода на шим в `worker/test/board.runtime.test.ts`**:
     - При `CI` или `REQUIRE_RUNTIME=1` (добавлено в `.github/workflows/ci.yml` и `deploy.yml`) тест падает, если `Miniflare` не загрузился; без переменной выводит предупреждение и помечается как `skip`.
 13. & 14. **Разделение `board.runtime.test.ts` на 2 независимых теста с тайм-аутом 60 секунд каждый (T2.5c п. 4)**:
     - **Тест 1 (`timeout: 60_000`)**: короткие проверки протокола (`hello` + `snapshot`, `scene_update` между двумя клиентами, автоответ `{"type":"ping"}` -> `{"type":"pong"}`, ожидание `2 600` мс для срабатывания продакшен-`alarm` `2 000` мс, немедленный сброс при закрытии сокета `wsA.close()`) и проверка сохранности данных на диске через `mf.dispose()` и повторный запуск `Miniflare` на том же каталоге SQLite.
     - **Тест 2 (`timeout: 60_000`)**: отдельный сценарий «15 секунд тишины» при `SAVE_INTERVAL_MS="5000"` с последующим перезапуском `Miniflare` на том же каталоге SQLite.
-    - *Примечание*: вызов `mf.dispose()` и повторный запуск `Miniflare` с тем же `durableObjectsPersist` проверяют сохранность данных в SQLite на диске, а не выгрузку объекта из памяти по 10-секундному таймеру гибернации; выгрузка по таймеру проверяется отдельно на живом `wrangler dev` (пункт 17 из T2.5b).
+    - _Примечание_: вызов `mf.dispose()` и повторный запуск `Miniflare` с тем же `durableObjectsPersist` проверяют сохранность данных в SQLite на диске, а не выгрузку объекта из памяти по 10-секундному таймеру гибернации; выгрузка по таймеру проверяется отдельно на живом `wrangler dev` (пункт 17 из T2.5b).
 
 ---
 
 ## 2. Таблица записей в SQLite за один сброс `flushSnapshot`: «До и После»
 
-| Операция при сбросе (`flushSnapshot`) | До T2.5 (`T1`) | После T2.5 / T2.5b / T2.5c (`task/T2.5-stabilize`) |
-| :--- | :--- | :--- |
-| `INSERT OR REPLACE INTO meta ('board_id', ?)` | 1 запрос на 1-м сбросе | **0 запросов** (`boardId` хранится в `WebSocketAttachment`) |
-| `INSERT OR REPLACE INTO meta ('snapshot_version', ?)` | 1 запрос на каждом сбросе | **0 запросов** |
-| `INSERT OR REPLACE INTO snapshot (chunk_idx, data)` (1 чанк `< 900 КБ`) | 1 строка на каждом сбросе | **1 строка** (только если дайджест чанка изменился) |
+| Операция при сбросе (`flushSnapshot`)                                                           | До T2.5 (`T1`)                         | После T2.5 / T2.5b / T2.5c (`task/T2.5-stabilize`)                             |
+| :---------------------------------------------------------------------------------------------- | :------------------------------------- | :----------------------------------------------------------------------------- |
+| `INSERT OR REPLACE INTO meta ('board_id', ?)`                                                   | 1 запрос на 1-м сбросе                 | **0 запросов** (`boardId` хранится в `WebSocketAttachment`)                    |
+| `INSERT OR REPLACE INTO meta ('snapshot_version', ?)`                                           | 1 запрос на каждом сбросе              | **0 запросов**                                                                 |
+| `INSERT OR REPLACE INTO snapshot (chunk_idx, data)` (1 чанк `< 900 КБ`)                         | 1 строка на каждом сбросе              | **1 строка** (только если дайджест чанка изменился)                            |
 | `INSERT OR REPLACE INTO snapshot (chunk_idx, data)` (доска `> 900 КБ`, изменился 1 из N чанков) | `N` строк (перезаписывались все чанки) | **1 строка** (переписывается только изменившийся чанк по `computeChunkDigest`) |
-| `DELETE FROM snapshot WHERE chunk_idx >= ?` | Вызывался на каждом сбросе | **Вызывается только при `chunks.length < lastPersistedChunksCount`** |
-| **Итого `rowsWritten` за 5 сбросов (100 `scene_update` за 5 с, 1 чанк)** | **11 строк** (`3 + 4×2`) | **5 строк** (`5×1`) |
+| `DELETE FROM snapshot WHERE chunk_idx >= ?`                                                     | Вызывался на каждом сбросе             | **Вызывается только при `chunks.length < lastPersistedChunksCount`**           |
+| **Итого `rowsWritten` за 5 сбросов (100 `scene_update` за 5 с, 1 чанк)**                        | **11 строк** (`3 + 4×2`)               | **5 строк** (`5×1`)                                                            |
 
-*(При прогоне в среде с `wrangler dev` приложите ниже фактический лог `snapshot_flush` из вывода реального рантайма `workerd`).*
+_(При прогоне в среде с `wrangler dev` приложите ниже фактический лог `snapshot_flush` из вывода реального рантайма `workerd`)._
 
 ---
 
@@ -80,11 +83,13 @@
 ## 4. Что проверено в текущей среде и что должен выполнить агент с доступом к сети и браузеру (раздел D)
 
 ### Проверено в текущей среде (офлайн-контейнер без доступа к `registry.npmjs.org` и браузеру):
+
 - `node scripts/check-licenses.mjs` — проверены манифесты workspaces и 8 исключений в `license-exceptions.json`.
 - `node scripts/gen-board-id.mjs 2` — проверена генерация 22-символьных base62 ID.
 - Прогнаны модульные тесты в `worker/test/health.test.ts` (5 тестов), `worker/test/licenses.test.ts` (5 тестов), `worker/test/board.test.ts` (12 тестов, включая тест отката транзакции п. 1 T2.5c и тест `snapshot_backup` / `board_not_saved` п. 2 T2.5c) и `web/test/collab.test.ts` (5 тестов) — 27 модульных тестов пройдены, а 2 runtime-теста в `worker/test/board.runtime.test.ts` без установленного `miniflare` при отсутствии `REQUIRE_RUNTIME=1` выводят предупреждение и помечаются как `skip` (при `REQUIRE_RUNTIME=1` падают с ошибкой).
 
 ### Не проверено в офлайн-контейнере (выполняется агентом на Node 22 с сетью и браузером по разделу D `docs/ANTIGRAVITY_T2_5_PROMPT.md`):
+
 1. `npm install` с настоящим реестром npm, коммит настоящего `package-lock.json` и проверка `npm ci` в чистом клоне (`git clone`).
 2. Полный прогон на Node 22 в чистом клоне:
    - `npm run check:licenses` (и проверка `npm ls axe-core lightningcss`);

@@ -425,8 +425,7 @@ export class Board extends DurableObject<Env> {
   }
 
   private setElementInMemory(element: ExcalidrawElementRecord, byteLength?: number): void {
-    const computedBytes =
-      byteLength ?? textEncoder.encode(JSON.stringify(element)).byteLength;
+    const computedBytes = byteLength ?? textEncoder.encode(JSON.stringify(element)).byteLength;
     const prevBytes = this.elementByteLengths.get(element.id) ?? 0;
     this.elements.set(element.id, element);
     this.elementByteLengths.set(element.id, computedBytes);
@@ -1071,7 +1070,8 @@ export class Board extends DurableObject<Env> {
             );
             continue;
           }
-          const currentBest = candidateUpdates.get(rawEl.id)?.element ?? this.elements.get(rawEl.id);
+          const currentBest =
+            candidateUpdates.get(rawEl.id)?.element ?? this.elements.get(rawEl.id);
           if (shouldReplaceElement(currentBest, rawEl)) {
             const elBytes = textEncoder.encode(JSON.stringify(rawEl)).byteLength;
             candidateUpdates.set(rawEl.id, { element: rawEl, byteLength: elBytes });

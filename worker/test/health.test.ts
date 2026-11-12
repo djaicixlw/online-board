@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import pkg from "../package.json";
-import worker, { Board, resolveSaveIntervalMs, type Env } from "../src/index.js";
+import worker, { Board, type Env } from "../src/index.js";
+import { resolveSaveIntervalMs } from "../src/board.js";
 import { createBoardTestHarness } from "./cloudflare-workers-shim.js";
 
 function createMockEnv(overrides: Partial<Env> = {}): Env {

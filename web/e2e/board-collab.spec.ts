@@ -67,13 +67,13 @@ test.describe("Board collaboration E2E (/b/:id)", () => {
     // Verify Client A has 1 element applied locally
     await expect(pageA.getByTestId("board-viewport")).toHaveAttribute(
       "data-scene-elements-count",
-      "1"
+      "1",
     );
 
     // Verify Client B receives the synchronized scene_update and has 1 element applied
     await expect(pageB.getByTestId("board-viewport")).toHaveAttribute(
       "data-scene-elements-count",
-      "1"
+      "1",
     );
 
     // Also verify by exporting .excalidraw on Client B that "e2e-rect-1" is present in Client B's scene

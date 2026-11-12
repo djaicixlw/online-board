@@ -158,23 +158,23 @@ Expected failure exit code: 1
 
 ## Новые зависимости (имя, лицензия, зачем)
 
-| Пакет | Пакет монорепо | Лицензия | Зачем нужен |
-| :--- | :--- | :--- | :--- |
-| [@excalidraw/excalidraw](https://www.npmjs.com/package/@excalidraw/excalidraw) | `web` | `MIT` | Основной компонент интерактивного холста доски (требование раздела 2 `SPEC.md`) |
-| [react](https://www.npmjs.com/package/react) | `web` | `MIT` | Обязательная peer-зависимость `@excalidraw/excalidraw` и рендеринг UI |
-| [react-dom](https://www.npmjs.com/package/react-dom) | `web` | `MIT` | Монтирование React-дерева в DOM браузера |
-| [@types/react](https://www.npmjs.com/package/@types/react) | `web` (dev) | `MIT` | Определения типов TypeScript для React |
-| [@types/react-dom](https://www.npmjs.com/package/@types/react-dom) | `web` (dev) | `MIT` | Определения типов TypeScript для React DOM |
-| [vite](https://www.npmjs.com/package/vite) | `web` (dev) | `MIT` | Сборщик фронтенда и dev-сервер с проксированием `/api` и `/ws` |
-| [@vitejs/plugin-react](https://www.npmjs.com/package/@vitejs/plugin-react) | `web` (dev) | `MIT` | Поддержка JSX/TSX и Fast Refresh в Vite |
-| [wrangler](https://www.npmjs.com/package/wrangler) | `worker` (dev) | `MIT OR Apache-2.0` | Официальный CLI Cloudflare для локального запуска (`wrangler dev`) и публикации (`wrangler deploy`) |
-| [@cloudflare/workers-types](https://www.npmjs.com/package/@cloudflare/workers-types) | `worker` (dev) | `BSD-3-Clause` / `Apache-2.0` | Типы TypeScript для `DurableObject`, `D1Database`, `Fetcher`, `ExportedHandler` |
-| [typescript](https://www.npmjs.com/package/typescript) | root (dev) | `Apache-2.0` | Проверка типов в режиме `strict` (`tsc --noEmit`) |
-| [eslint](https://www.npmjs.com/package/eslint) | root (dev) | `MIT` | Статический анализатор кода |
-| [@eslint/js](https://www.npmjs.com/package/@eslint/js) | root (dev) | `MIT` | Базовый набор правил ESLint 9 |
-| [typescript-eslint](https://www.npmjs.com/package/typescript-eslint) | root (dev) | `MIT` | Парсер и строгие правила ESLint для TypeScript |
-| [prettier](https://www.npmjs.com/package/prettier) | root (dev) | `MIT` | Единообразное форматирование кода |
-| [vitest](https://www.npmjs.com/package/vitest) | root (dev) | `MIT` | Модульное тестирование Worker и утилит |
+| Пакет                                                                                | Пакет монорепо | Лицензия                      | Зачем нужен                                                                                         |
+| :----------------------------------------------------------------------------------- | :------------- | :---------------------------- | :-------------------------------------------------------------------------------------------------- |
+| [@excalidraw/excalidraw](https://www.npmjs.com/package/@excalidraw/excalidraw)       | `web`          | `MIT`                         | Основной компонент интерактивного холста доски (требование раздела 2 `SPEC.md`)                     |
+| [react](https://www.npmjs.com/package/react)                                         | `web`          | `MIT`                         | Обязательная peer-зависимость `@excalidraw/excalidraw` и рендеринг UI                               |
+| [react-dom](https://www.npmjs.com/package/react-dom)                                 | `web`          | `MIT`                         | Монтирование React-дерева в DOM браузера                                                            |
+| [@types/react](https://www.npmjs.com/package/@types/react)                           | `web` (dev)    | `MIT`                         | Определения типов TypeScript для React                                                              |
+| [@types/react-dom](https://www.npmjs.com/package/@types/react-dom)                   | `web` (dev)    | `MIT`                         | Определения типов TypeScript для React DOM                                                          |
+| [vite](https://www.npmjs.com/package/vite)                                           | `web` (dev)    | `MIT`                         | Сборщик фронтенда и dev-сервер с проксированием `/api` и `/ws`                                      |
+| [@vitejs/plugin-react](https://www.npmjs.com/package/@vitejs/plugin-react)           | `web` (dev)    | `MIT`                         | Поддержка JSX/TSX и Fast Refresh в Vite                                                             |
+| [wrangler](https://www.npmjs.com/package/wrangler)                                   | `worker` (dev) | `MIT OR Apache-2.0`           | Официальный CLI Cloudflare для локального запуска (`wrangler dev`) и публикации (`wrangler deploy`) |
+| [@cloudflare/workers-types](https://www.npmjs.com/package/@cloudflare/workers-types) | `worker` (dev) | `BSD-3-Clause` / `Apache-2.0` | Типы TypeScript для `DurableObject`, `D1Database`, `Fetcher`, `ExportedHandler`                     |
+| [typescript](https://www.npmjs.com/package/typescript)                               | root (dev)     | `Apache-2.0`                  | Проверка типов в режиме `strict` (`tsc --noEmit`)                                                   |
+| [eslint](https://www.npmjs.com/package/eslint)                                       | root (dev)     | `MIT`                         | Статический анализатор кода                                                                         |
+| [@eslint/js](https://www.npmjs.com/package/@eslint/js)                               | root (dev)     | `MIT`                         | Базовый набор правил ESLint 9                                                                       |
+| [typescript-eslint](https://www.npmjs.com/package/typescript-eslint)                 | root (dev)     | `MIT`                         | Парсер и строгие правила ESLint для TypeScript                                                      |
+| [prettier](https://www.npmjs.com/package/prettier)                                   | root (dev)     | `MIT`                         | Единообразное форматирование кода                                                                   |
+| [vitest](https://www.npmjs.com/package/vitest)                                       | root (dev)     | `MIT`                         | Модульное тестирование Worker и утилит                                                              |
 
 ## Допущения и вопросы
 

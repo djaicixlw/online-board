@@ -72,8 +72,7 @@ async function loadMiniflareAndBundle(): Promise<{
 }
 
 async function requireOrSkipMiniflare(ctx: { skip: () => void }) {
-  const requireRuntime =
-    Boolean(process.env.CI) || process.env.REQUIRE_RUNTIME === "1";
+  const requireRuntime = Boolean(process.env.CI) || process.env.REQUIRE_RUNTIME === "1";
 
   try {
     return await loadMiniflareAndBundle();
@@ -110,7 +109,7 @@ describe("Task T2.5, T2.5b & T2.5c: Board Durable Object Runtime Integration Sui
         new mfEnv.MiniflareClass({
           modules: true,
           script: mfEnv.scriptContent,
-          compatibilityDate: "2026-11-07",
+          compatibilityDate: "2026-08-06",
           durableObjects: {
             BOARD: {
               className: "Board",
@@ -256,7 +255,7 @@ describe("Task T2.5, T2.5b & T2.5c: Board Durable Object Runtime Integration Sui
         new mfEnv.MiniflareClass({
           modules: true,
           script: mfEnv.scriptContent,
-          compatibilityDate: "2026-11-07",
+          compatibilityDate: "2026-08-06",
           durableObjects: {
             BOARD: {
               className: "Board",

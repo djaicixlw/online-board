@@ -19,6 +19,7 @@ const PORT = Number(process.env.MOCK_WS_PORT ?? 8788);
 const MAX_CLIENTS_PER_BOARD = Number(process.env.MAX_CLIENTS_PER_BOARD ?? 25);
 const MAX_WS_PAYLOAD_BYTES = 2 * 1024 * 1024; // 2 MB limit (Fix #10)
 const BASE62_BOARD_ID_RE = /^[0-9A-Za-z]{22}$/;
+// eslint-disable-next-line no-control-regex
 const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F-\u009F]/g;
 
 /**
@@ -147,7 +148,7 @@ server.on("upgrade", (req, socket, head) => {
             type: "snapshot",
             elements: Array.from(room.elements.values()),
             collaborators: Array.from(room.clients.values()),
-          })
+          }),
         );
         return;
       }
@@ -202,7 +203,8 @@ server.on("upgrade", (req, socket, head) => {
           nick: attachment.nick,
           x: parsed.x,
           y: parsed.y,
-          pointer: parsed.pointer === "pen" || parsed.pointer === "laser" ? parsed.pointer : "mouse",
+          pointer:
+            parsed.pointer === "pen" || parsed.pointer === "laser" ? parsed.pointer : "mouse",
           tool: typeof parsed.tool === "string" ? parsed.tool.slice(0, 32) : "selection",
         });
 

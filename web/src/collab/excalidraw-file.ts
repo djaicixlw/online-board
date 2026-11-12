@@ -55,9 +55,7 @@ export function parseExcalidrawDocument(rawJson: string): {
 } {
   const byteLength = textEncoder.encode(rawJson).byteLength;
   if (byteLength > MAX_EXCALIDRAW_FILE_BYTES) {
-    throw new Error(
-      `File exceeds maximum allowed size (${MAX_EXCALIDRAW_FILE_BYTES} bytes)`,
-    );
+    throw new Error(`File exceeds maximum allowed size (${MAX_EXCALIDRAW_FILE_BYTES} bytes)`);
   }
 
   const parsed = JSON.parse(rawJson) as Record<string, unknown>;

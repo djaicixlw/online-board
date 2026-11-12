@@ -2,8 +2,10 @@ import { webcrypto } from "node:crypto";
 import type { Board } from "../src/board.js";
 import type { Env } from "../src/env.js";
 
-if (typeof globalThis.crypto === "undefined") {
-  (globalThis as Record<string, unknown>).crypto = webcrypto;
+const globalScope = globalThis as unknown as Record<string, unknown>;
+
+if (typeof globalScope.crypto === "undefined") {
+  globalScope.crypto = webcrypto;
 }
 
 /**
@@ -142,13 +144,12 @@ export class MockWebSocketPair {
   }
 }
 
-if (typeof globalThis.WebSocketRequestResponsePair === "undefined") {
-  (globalThis as Record<string, unknown>).WebSocketRequestResponsePair =
-    MockWebSocketRequestResponsePair;
+if (typeof globalScope.WebSocketRequestResponsePair === "undefined") {
+  globalScope.WebSocketRequestResponsePair = MockWebSocketRequestResponsePair;
 }
 
-if (typeof globalThis.WebSocketPair === "undefined") {
-  (globalThis as Record<string, unknown>).WebSocketPair = MockWebSocketPair;
+if (typeof globalScope.WebSocketPair === "undefined") {
+  globalScope.WebSocketPair = MockWebSocketPair;
 }
 
 /**

@@ -39,6 +39,46 @@
       "package": "package-json-from-dist",
       "license": "BlueOak-1.0.0",
       "reason": "Транзитивная утилита разрешения путей в glob (инструменты разработки); пермиссивная лицензия Blue Oak Model License 1.0.0."
+    },
+    {
+      "package": "minimatch",
+      "license": "BlueOak-1.0.0",
+      "reason": "Транзитивная зависимость сопоставления путей в eslint/typescript-eslint; пермиссивная лицензия Blue Oak Model License 1.0.0."
+    },
+    {
+      "package": "fractional-indexing",
+      "license": "CC0-1.0",
+      "reason": "Транзитивная библиотека алгоритма упорядочивания элементов Excalidraw под CC0-1.0 (общественное достояние)."
+    },
+    {
+      "package": "@speed-highlight/core",
+      "license": "CC0-1.0",
+      "reason": "Транзитивная библиотека подсветки синтаксиса в инструментах сборки под CC0-1.0 (общественное достояние)."
+    },
+    {
+      "package": "khroma",
+      "license": "UNKNOWN",
+      "reason": "Транзитивная CSS-утилита цветов под MIT лицензией (файл LICENSE в репозитории подтверждает MIT, поле license пропущено в package.json)."
+    },
+    {
+      "package": "pako",
+      "license": "(MIT AND Zlib)",
+      "reason": "Транзитивная библиотека сжатия данных Excalidraw под пермиссивными лицензиями MIT и Zlib."
+    },
+    {
+      "package": "robust-predicates",
+      "license": "Unlicense",
+      "reason": "Транзитивная математическая библиотека предикатов Excalidraw под лицензией Unlicense (общественное достояние)."
+    },
+    {
+      "package": "@img/sharp-*",
+      "license": "Apache-2.0 AND LGPL-3.0-or-later",
+      "reason": "Транзитивная devDependency инструментов Cloudflare (wrangler/miniflare) для локальной обработки изображений; не попадает в бандл воркера и продакшен."
+    },
+    {
+      "package": "@img/sharp-libvips-*",
+      "license": "LGPL-3.0-or-later",
+      "reason": "Транзитивные предсобранные бинарные библиотеки libvips для sharp в составе wrangler/miniflare; используются только при локальной разработке, не загружаются на Cloudflare."
     }
   ]
 }

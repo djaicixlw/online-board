@@ -95,9 +95,7 @@ export class VersionDiffTracker {
   /**
    * Returns elements that are new or have a newer version (or winning versionNonce) compared to the last synced state.
    */
-  public getChangedElements(
-    elements: readonly ExcalidrawElementLike[],
-  ): ExcalidrawElementLike[] {
+  public getChangedElements(elements: readonly ExcalidrawElementLike[]): ExcalidrawElementLike[] {
     const changed: ExcalidrawElementLike[] = [];
     for (const el of elements) {
       if (!isValidFiniteElement(el)) {

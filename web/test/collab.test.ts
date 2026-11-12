@@ -327,9 +327,7 @@ describe("Task T2 & T2.5b: Collab Module (throttling, batching, version diff, re
       const sockets: FakeWebSocket[] = [];
       const statuses: ConnectionStatus[] = [];
       let latestCollaborators: CollaboratorInfo[] = [];
-      let localElements: ExcalidrawElementLike[] = [
-        { id: "init-1", version: 1, versionNonce: 10 },
-      ];
+      let localElements: ExcalidrawElementLike[] = [{ id: "init-1", version: 1, versionNonce: 10 }];
 
       const client = new BoardCollabClient({
         boardId: VALID_BOARD_ID,
@@ -452,9 +450,9 @@ describe("Task T2 & T2.5b: Collab Module (throttling, batching, version diff, re
     // Fix #2 & B.10: Multi-touch secondary finger (isPrimary: false) and Excalidraw toolbar targets are never blocked,
     // and palm contact threshold is 48px
     expect(PALM_CONTACT_SIZE_THRESHOLD_PX).toBe(48);
-    expect(
-      shouldSuppressTouchOrPalmDrawing({ pointerType: "touch", isPrimary: false }, true),
-    ).toBe(false);
+    expect(shouldSuppressTouchOrPalmDrawing({ pointerType: "touch", isPrimary: false }, true)).toBe(
+      false,
+    );
     expect(
       shouldSuppressTouchOrPalmDrawing(
         { pointerType: "touch", isPrimary: true, width: 20, height: 20 },

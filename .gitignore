@@ -27,6 +27,9 @@ worker/.dev.vars.*
 
 # Testing & coverage
 coverage/
+test-results/
+playwright-report/
+web/test-results/
 
 # Logs & OS files
 *.log

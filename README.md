@@ -7,6 +7,7 @@
 ## Документация выполненных задач и ревью (`docs/`)
 
 В папке [`docs/`](./docs/) собрана полная документация всех этапов разработки, стабилизации и код-ревью:
+
 - [`docs/PROJECT_HISTORY.md`](./docs/PROJECT_HISTORY.md) — сводная хронологическая документация по всему проекту (`T0`, `T1`, `T2`, исправления по ревью и стабилизация `T2.5 / T2.5b / T2.5c`).
 - [`docs/PR_T2_5_stabilize.md`](./docs/PR_T2_5_stabilize.md) — отчёт и описание PR по задаче **T2.5 / T2.5b / T2.5c** («Стабилизация перед пилотом»).
 - [`docs/ANTIGRAVITY_T2_5_PROMPT.md`](./docs/ANTIGRAVITY_T2_5_PROMPT.md) — подробная инструкция и готовый промпт **T2.5b + T2.5c** для агента с доступом к интернету и браузеру (`npm install`, `npm ci`, E2E в Chromium, живые проверки на `wrangler dev`).
@@ -110,6 +111,7 @@ npm run dev
 ```
 
 Что делает `npm run dev`:
+
 1. Если файл `worker/.dev.vars` ещё не существует, автоматически создаёт его из шаблона `.dev.vars.example` с параметрами для локальной разработки (`SAVE_INTERVAL_MS=5000` и `ALLOW_ANY_BOARD_ID=true`).
 2. Копирует локальные шрифты из пакета `@excalidraw/excalidraw` в `web/public/fonts/`, чтобы браузер загружал все ресурсы исключительно со своего локального сервера (`window.EXCALIDRAW_ASSET_PATH = "/"`).
 3. Параллельно поднимает:
@@ -138,27 +140,29 @@ npm run dev
 
 Все основные команды запускаются из корня монорепозитория:
 
-| Команда | Описание |
-| :--- | :--- |
-| `npm run dev` | Запускает локально одновременно `web` (Vite на `:5173`) и `worker` (Wrangler на `:8787`) одной командой |
-| `npm run gen:board-id -- 10` | Генерирует `N` (по умолчанию 1, до 50) криптостойких 22-символьных base62 ID досок (`scripts/gen-board-id.mjs`) |
-| `npm run mock:ws` | Запускает автономный WebSocket мок-сервер (`scripts/mock-ws.mjs` на `:8788`) |
-| `npm run smoke:ws` | Подключается к запущенному `wrangler dev` (`WS_SMOKE_URL`, по умолчанию `ws://localhost:8787`) и проверяет совместное рисование 3 клиентов |
-| `npm run build` | Собирает статику фронтенда в `web/dist` (включая локальные шрифты Excalidraw) и проверяет сборку Worker (`wrangler deploy --dry-run`) |
-| `npm test` | Запускает модульные и интеграционные тесты [Vitest](https://vitest.dev/) в `web` и `worker` (при `REQUIRE_RUNTIME=1` требует `Miniflare` в `board.runtime.test.ts`) |
-| `npm run test:e2e` | Запускает E2E-тест двух браузеров в Playwright (`web/e2e/board-collab.spec.ts`) |
-| `npm run lint` | Проверяет весь код с помощью ESLint (`strict`) и форматирование через Prettier |
-| `npm run format` | Автоматически форматирует файлы проекта с помощью Prettier |
-| `npm run typecheck` | Запускает строгую проверку типов TypeScript (`tsc --noEmit` с `exactOptionalPropertyTypes: true`) во всех пакетах (`web` и `worker`) |
-| `npm run check:licenses` | Проверяет лицензии всех зависимостей по `package-lock.json` и `node_modules` (разрешены `MIT`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `ISC`; исключения — в `license-exceptions.json`) |
+| Команда                      | Описание                                                                                                                                                                                      |
+| :--------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run dev`                | Запускает локально одновременно `web` (Vite на `:5173`) и `worker` (Wrangler на `:8787`) одной командой                                                                                       |
+| `npm run gen:board-id -- 10` | Генерирует `N` (по умолчанию 1, до 50) криптостойких 22-символьных base62 ID досок (`scripts/gen-board-id.mjs`)                                                                               |
+| `npm run mock:ws`            | Запускает автономный WebSocket мок-сервер (`scripts/mock-ws.mjs` на `:8788`)                                                                                                                  |
+| `npm run smoke:ws`           | Подключается к запущенному `wrangler dev` (`WS_SMOKE_URL`, по умолчанию `ws://localhost:8787`) и проверяет совместное рисование 3 клиентов                                                    |
+| `npm run build`              | Собирает статику фронтенда в `web/dist` (включая локальные шрифты Excalidraw) и проверяет сборку Worker (`wrangler deploy --dry-run`)                                                         |
+| `npm test`                   | Запускает модульные и интеграционные тесты [Vitest](https://vitest.dev/) в `web` и `worker` (при `REQUIRE_RUNTIME=1` требует `Miniflare` в `board.runtime.test.ts`)                           |
+| `npm run test:e2e`           | Запускает E2E-тест двух браузеров в Playwright (`web/e2e/board-collab.spec.ts`)                                                                                                               |
+| `npm run lint`               | Проверяет весь код с помощью ESLint (`strict`) и форматирование через Prettier                                                                                                                |
+| `npm run format`             | Автоматически форматирует файлы проекта с помощью Prettier                                                                                                                                    |
+| `npm run typecheck`          | Запускает строгую проверку типов TypeScript (`tsc --noEmit` с `exactOptionalPropertyTypes: true`) во всех пакетах (`web` и `worker`)                                                          |
+| `npm run check:licenses`     | Проверяет лицензии всех зависимостей по `package-lock.json` и `node_modules` (разрешены `MIT`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `ISC`; исключения — в `license-exceptions.json`) |
 
 ## Как владельцу восстановить данные из `snapshot_backup` при повреждении снимка
 
 Если при пробуждении Durable Object `Board` обнаруживает, что JSON снимка в таблице `snapshot` повреждён (в логах Worker появляется событие `snapshot_load_error`), объект:
+
 1. Автоматически копирует все повреждённые куски в резервную таблицу SQLite **`snapshot_backup (chunk_idx INTEGER PRIMARY KEY, data BLOB, backed_up_at INTEGER)`** и пишет в лог событие `snapshot_corrupted_backup_saved`.
 2. Если резервная копия записана успешно, доска стартует с чистой сценой и продолжает штатно сохранять новые изменения в `snapshot`, не блокируя урок. (Если же записать резервную копию не удалось, запись в `snapshot` блокируется, а при подключении клиенту уходит `{"type":"error","code":"board_not_saved"}` с постоянной плашкой «Доска повреждена, изменения не сохраняются. Сообщите преподавателю»).
 
 Чтобы извлечь и восстановить сохранённые куски из `snapshot_backup`:
+
 1. В логах Cloudflare Workers (`Workers & Pages` → `online-board` → `Logs` / `wrangler tail`) найдите запись `snapshot_corrupted_backup_saved` и посмотрите поле `boardId`.
 2. Для локальной базы `wrangler dev` откройте SQLite-файл объекта в `worker/.wrangler/state/v3/do/` и выполните:
    ```sql
@@ -191,6 +195,7 @@ npm run dev
 В файле `.github/workflows/deploy.yml` настроена группа `concurrency: deploy-production` (чтобы два деплоя никогда не шли параллельно) и добавлены обязательные шаги проверки (`npm run check:licenses`, `npm run typecheck`, `npm run lint`, `REQUIRE_RUNTIME=1 npm test`) перед `npm run build` и публикацией в Cloudflare.
 
 Чтобы ни один Pull Request не мог быть влит в `main` до успешного прохождения всех проверок CI:
+
 1. Откройте репозиторий на GitHub → **Settings** → **Branches** (или **Rules** → **Rulesets**).
 2. Нажмите **Add branch protection rule** для ветки `main`.
 3. Включите опцию **Require a pull request before merging**.
@@ -226,7 +231,7 @@ npm run dev
    curl https://online-board.<ваш-поддомен>.workers.dev/api/health
    # Ответ: {"ok":true,"version":"0.1.0"}
    ```
-   *(Обратите внимание: пока секрет `PILOT_BOARD_IDS` ещё не задан, при `ALLOW_ANY_BOARD_ID = "false"` первый деплой безопасно отвечает `404` на любые запросы к `/ws/*`).*
+   _(Обратите внимание: пока секрет `PILOT_BOARD_IDS` ещё не задан, при `ALLOW_ANY_BOARD_ID = "false"` первый деплой безопасно отвечает `404` на любые запросы к `/ws/*`)._
 
 ### Шаг 4. Сгенерируйте ID досок и задайте секрет `PILOT_BOARD_IDS`
 
