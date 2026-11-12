@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-const TEST_BOARD_ID = "0123456789abcdefghijkl";
+const TEST_BOARD_ID = process.env.TEST_BOARD_ID ?? "5D5s8U8ugdus2jDtyflsJE";
 
 /**
  * E2E test for collaborative work of two browsers on a single board (SPEC section 12 / T2):
