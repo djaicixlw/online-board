@@ -220,9 +220,41 @@ export class MockSqlStorage {
       };
     }
 
+    if (upper.startsWith("CREATE TABLE IF NOT EXISTS META")) {
+      const existed = this.tablesCreated.has("meta");
+      this.tablesCreated.add("meta");
+      return {
+        rowsRead: 0,
+        rowsWritten: existed ? 0 : 1,
+        toArray: () => [],
+      };
+    }
+
     if (upper.startsWith("SELECT NAME FROM SQLITE_MASTER")) {
-      const hasSnapshot = this.tablesCreated.has("snapshot");
-      const rows = hasSnapshot ? [{ name: "snapshot" }] : [];
+      const rows: Array<{ name: string }> = [];
+      if (upper.includes("NAME = 'META'")) {
+        if (this.tablesCreated.has("meta")) {
+          rows.push({ name: "meta" });
+        }
+      } else if (upper.includes("NAME = 'SNAPSHOT'")) {
+        if (this.tablesCreated.has("snapshot")) {
+          rows.push({ name: "snapshot" });
+        }
+      } else {
+        for (const t of this.tablesCreated) {
+          rows.push({ name: t });
+        }
+      }
+      return {
+        rowsRead: rows.length,
+        rowsWritten: 0,
+        toArray: () => rows,
+      };
+    }
+
+    if (upper.startsWith("SELECT VALUE FROM META WHERE KEY = 'REVOKED'")) {
+      const val = this.metaTable.get("revoked");
+      const rows = val !== undefined ? [{ value: val }] : [];
       return {
         rowsRead: rows.length,
         rowsWritten: 0,
@@ -451,8 +483,10 @@ export function createBoardTestHarness(
         }
         const currentEntry = entry;
         return {
-          fetch: async (req: Request) => {
+          fetch: async (input: Request | string | URL, init?: RequestInit) => {
             await currentEntry.state.waitForInit();
+            const req =
+              typeof input === "string" || input instanceof URL ? new Request(input, init) : input;
             return currentEntry.board.fetch(req);
           },
         } as unknown as DurableObjectStub<Board>;

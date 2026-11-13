@@ -358,6 +358,7 @@ export class Board extends DurableObject<Env> {
 
   private boardId = "unknown";
   private boardRef = "unknown";
+  private isRevoked = false;
 
   private setBoardId(id: string): void {
     this.boardId = id;
@@ -598,6 +599,16 @@ export class Board extends DurableObject<Env> {
     const sql = this.ctx.storage?.sql;
     if (!sql) {
       return;
+    }
+
+    const metaCheck = sql
+      .exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")
+      .toArray();
+    if (metaCheck.length > 0) {
+      const revokedRows = sql.exec("SELECT value FROM meta WHERE key = 'revoked'").toArray();
+      if (revokedRows.length > 0 && (revokedRows[0] as { value?: string })?.value === "1") {
+        this.isRevoked = true;
+      }
     }
 
     const tableCheck = sql
@@ -852,6 +863,69 @@ export class Board extends DurableObject<Env> {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    // Internal management endpoints for Task T3
+    if (url.pathname === "/internal/export") {
+      const activeElements = Array.from(this.elements.values()).filter((e) => !e.isDeleted);
+      return Response.json({
+        ok: true,
+        elements: activeElements,
+      });
+    }
+
+    if (url.pathname === "/internal/import" && request.method === "PUT") {
+      const body = (await request.json().catch(() => null)) as {
+        elements?: ExcalidrawElementRecord[];
+      } | null;
+      if (!body || !Array.isArray(body.elements)) {
+        return Response.json({ ok: false, error: "Invalid import payload" }, { status: 400 });
+      }
+      const now = Date.now();
+      this.elements.clear();
+      this.elementByteLengths.clear();
+      this.totalElementsBytes = 0;
+      for (const item of body.elements) {
+        if (isValidExcalidrawElement(item)) {
+          const resetEl: ExcalidrawElementRecord = {
+            ...item,
+            version: 1,
+            versionNonce: Math.floor(Math.random() * 2147483647),
+            updated: now,
+          };
+          this.setElementInMemory(resetEl);
+        }
+      }
+      this.dirty = true;
+      await this.flushSnapshot("manual");
+      return Response.json({ ok: true, elementsCount: this.elements.size });
+    }
+
+    if (url.pathname === "/internal/revoke" && request.method === "POST") {
+      this.isRevoked = true;
+      const sql = this.ctx.storage?.sql;
+      if (sql) {
+        try {
+          sql.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+          sql.exec("INSERT OR REPLACE INTO meta (key, value) VALUES ('revoked', '1')");
+        } catch (err) {
+          console.error("[board] Error persisting revoked state in meta:", err);
+        }
+      }
+      for (const ws of this.ctx.getWebSockets()) {
+        try {
+          ws.close(1008, "Board deleted");
+        } catch {
+          // Ignore close error on terminating socket
+        }
+      }
+      return Response.json({ ok: true, revoked: true });
+    }
+
+    if (this.isRevoked) {
+      return Response.json({ ok: false, error: "Board deleted" }, { status: 404 });
+    }
+
     if (request.method !== "GET") {
       return Response.json({ ok: false, error: "Expected GET request" }, { status: 400 });
     }
@@ -861,7 +935,6 @@ export class Board extends DurableObject<Env> {
       return Response.json({ ok: false, error: "Expected Upgrade: websocket" }, { status: 400 });
     }
 
-    const url = new URL(request.url);
     const pathMatch = /^\/ws\/([^/]+)$/.exec(url.pathname);
     const candidateBoardId = pathMatch?.[1] ?? null;
     if (!isValidBoardId(candidateBoardId)) {

@@ -155,6 +155,52 @@ npm run dev
 | `npm run typecheck`          | Запускает строгую проверку типов TypeScript (`tsc --noEmit` с `exactOptionalPropertyTypes: true`) во всех пакетах (`web` и `worker`)                                                          |
 | `npm run check:licenses`     | Проверяет лицензии всех зависимостей по `package-lock.json` и `node_modules` (разрешены `MIT`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `ISC`; исключения — в `license-exceptions.json`) |
 
+## База данных Cloudflare D1 и Личный кабинет преподавателя (T3)
+
+Личный кабинет преподавателя (`/teacher`) позволяет создавать и дублировать доски в 1 клик, привязывать их к ученикам и вести рабочие заметки. Доступ защищён секретным токеном преподавателя (в БД хранится только SHA-256 хэш).
+
+### 1. Создание базы данных D1 и применение миграций
+
+1. Создайте базу данных Cloudflare D1:
+   ```bash
+   npx wrangler d1 create online-board-db
+   ```
+2. Скопируйте полученный `database_id` в `worker/wrangler.toml`:
+   ```toml
+   [[d1_databases]]
+   binding = "DB"
+   database_name = "online-board-db"
+   database_id = "<ваш_database_id>"
+   ```
+3. Примените начальную миграцию схемы (`worker/migrations/0001_init.sql`):
+   ```bash
+   # Локально:
+   npx wrangler d1 execute online-board-db --local --file=worker/migrations/0001_init.sql
+
+   # В облаке Cloudflare:
+   npx wrangler d1 execute online-board-db --remote --file=worker/migrations/0001_init.sql
+   ```
+
+### 2. Генерация токена преподавателя
+
+Сгенерируйте новый аккаунт преподавателя с помощью скрипта:
+
+```bash
+node scripts/create-teacher.mjs --name "Иван Иванович"
+```
+
+Скрипт сгенерирует 22-значный base62 ID, криптостойкий токен (>260 бит энтропии), вычислит SHA-256 хэш и выведет готовую команду вставки:
+
+```bash
+npx wrangler d1 execute online-board-db --remote --command "INSERT INTO teachers (id, name, token_hash, created_at) VALUES (...);"
+```
+
+### 3. Работа в кабинете
+
+1. Перейдите по адресу `/teacher` (или нажмите ссылку в верхней панели доски).
+2. Введите токен доступа (он сохранится в `localStorage`).
+3. Создавайте карточки учеников, пишите заметки к урокам и создавайте доски в 1 клик (ссылка сразу копируется в буфер обмена).
+
 ## Как владельцу восстановить данные из `snapshot_backup` при повреждении снимка
 
 Если при пробуждении Durable Object `Board` обнаруживает, что JSON снимка в таблице `snapshot` повреждён (в логах Worker появляется событие `snapshot_load_error`), объект:
