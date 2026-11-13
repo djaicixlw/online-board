@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,13 +54,28 @@ const webProc = startProcess("web", ["--workspace=@online-board/web", "run", "de
 
 let shuttingDown = false;
 
+function terminateProcess(child) {
+  if (!child || child.pid === undefined) {
+    return;
+  }
+  try {
+    if (process.platform === "win32") {
+      spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+    } else {
+      child.kill("SIGTERM");
+    }
+  } catch {
+    // Ignore errors if process is already gone
+  }
+}
+
 function shutdown(exitCode = 0) {
   if (shuttingDown) {
     return;
   }
   shuttingDown = true;
-  workerProc.kill("SIGTERM");
-  webProc.kill("SIGTERM");
+  terminateProcess(workerProc);
+  terminateProcess(webProc);
   setTimeout(() => {
     process.exit(exitCode);
   }, 200);

@@ -42,11 +42,13 @@
 ## 2. Результаты локальной приёмки
 
 ### 2.1. Лицензии (`npm run check:licenses`)
+
 ```text
 [check-licenses] OK — проверено пакетов: 640, исключений в license-exceptions.json: 16. Запрещённых лицензий не обнаружено.
 ```
 
 ### 2.2. Проверка типов (`npm run typecheck`)
+
 ```text
 > @online-board/web@0.1.0 typecheck
 > tsc --noEmit
@@ -57,6 +59,7 @@
 ```
 
 ### 2.3. Линтинг и форматирование (`npm run lint`)
+
 ```text
 > eslint . && prettier --check .
 Checking formatting...
@@ -65,6 +68,7 @@ All matched files use Prettier code style!
 ```
 
 ### 2.4. Модульные и интеграционные тесты (`REQUIRE_RUNTIME=1 npm test`)
+
 ```text
 Test Files  4 passed (4)
      Tests  26 passed (26)
@@ -78,6 +82,7 @@ Test Files  4 passed (4)
 ```
 
 ### 2.5. Сборка проекта (`npm run build`)
+
 ```text
 ✓ built in 10.81s
 wrangler deploy --dry-run --outdir dist
@@ -87,6 +92,7 @@ Total Upload: 43.19 KiB / gzip: 10.29 KiB
 ```
 
 ### 2.6. E2E тесты в браузере Chromium (`npm run test:e2e`)
+
 ```text
 Running 2 tests using 2 workers
 
@@ -97,6 +103,7 @@ Running 2 tests using 2 workers
 ```
 
 ### 2.7. Автоматическая проверка безопасности (`node scripts/verify-prod.mjs`)
+
 ```text
 ===============================================================
 🛡️  VERIFY-PROD: Проверка безопасности и заголовков
@@ -127,6 +134,7 @@ Running 2 tests using 2 workers
 ```
 
 ### 2.8. Полный проверочный скрипт (`node scripts/verify-all.mjs`)
+
 ```text
 PASS npm ci (25.0 s)
 INFO npm ls axe-core lightningcss (справка про MPL-2.0) (1.5 s)
@@ -145,14 +153,18 @@ PASS live: правка сохраняется при немедленном з�
 ```
 
 ### 2.9. Аудит продакшен-зависимостей (`npm audit --omit=dev`)
+
 Вывод команды `npm audit --omit=dev` обнаружил 12 транзитивных уязвимостей внутри пакета `@excalidraw/excalidraw`:
+
 - **katex**: GHSA-238p-pmpm-9mq7 (Prototype pollution in math rendering).
 - **lodash-es**: GHSA-r5fr-rjxr-66jc, GHSA-xxjr-mmjv-4gpg (Prototype pollution / code injection в `template`).
 - **nanoid**: GHSA-mwcw-c2x4-8c55, GHSA-28wg-ghj8-5hjv, GHSA-2v37-7h3g-55p8, GHSA-xwg4-73v4-xw9w.
-Все они входят через глубокую зависимость `@excalidraw/mermaid-to-excalidraw` и сам бандл Excalidraw. В приложении отключён ввод недоверенных Mermaid-диаграмм от учеников, а `script-src 'self'` без `unsafe-eval` блокирует выполнение динамического кода. Уязвимости зафиксированы в `docs/SECURITY.md` как известный остаточный риск апстрима Excalidraw до выпуска им обновления.
+  Все они входят через глубокую зависимость `@excalidraw/mermaid-to-excalidraw` и сам бандл Excalidraw. В приложении отключён ввод недоверенных Mermaid-диаграмм от учеников, а `script-src 'self'` без `unsafe-eval` блокирует выполнение динамического кода. Уязвимости зафиксированы в `docs/SECURITY.md` как известный остаточный риск апстрима Excalidraw до выпуска им обновления.
 
 ### 2.10. Проверка отсутствия секретов и реальных ID (`git grep`)
+
 Выполнены поисковые запросы по всему репозиторию:
+
 - `git grep -i "Mo23Z58APZ0yRwkkM6gutm"` → **0 совпадений**.
 - `git grep -i "pdsRV7Lbui7k6t"` → **0 совпадений**.
 - `git grep -i "aghaskdbbb"` → **0 совпадений**.
