@@ -39,4 +39,6 @@ new_sqlite_classes = ["Board"]
 [vars]
 SAVE_INTERVAL_MS = "5000"
 ALLOW_ANY_BOARD_ID = "false"
-PILOT_BOARD_IDS = "5D5s8U8ugdus2jDtyflsJE,pdsRV7Lbui7k6tv4p1b3XZ,Mo23Z58APZ0yRwkkM6gutm,TeqDaUF88aylflUlGh8Xst,S3XgM6pXgDr0Qvo5O7vOCg,0123456789abcdefghijkl"
+# PILOT_BOARD_IDS задаётся в виде секрета в панели Cloudflare или через:
+#   npx wrangler secret put PILOT_BOARD_IDS
+# В коде репозитория реальные ID досок не хранятся.

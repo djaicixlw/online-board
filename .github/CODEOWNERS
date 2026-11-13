@@ -1,0 +1,5 @@
+# Critical infrastructure and security files ownership
+/.github/                  @djaicixlw
+/worker/wrangler.toml      @djaicixlw
+/web/public/_headers       @djaicixlw
+/docs/SECURITY.md          @djaicixlw

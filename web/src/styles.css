@@ -276,13 +276,3 @@ body,
   color: #991b1b;
   font-size: 13px;
 }
-
-/* Скрываем сторонние иконки Excalidraw (Discord, Twitter, помощь со ссылками на внешние сайты) */
-.excalidraw .help-icon,
-.excalidraw .dropdown-menu-item[aria-label*="Discord"],
-.excalidraw .dropdown-menu-item[aria-label*="Twitter"],
-.excalidraw .dropdown-menu-item[aria-label*="GitHub"],
-.excalidraw .dropdown-menu-item[aria-label*="Excalidraw+"],
-.excalidraw .welcome-screen-menu-item {
-  display: none !important;
-}

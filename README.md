@@ -8,6 +8,7 @@
 
 В папке [`docs/`](./docs/) собрана полная документация всех этапов разработки, стабилизации и код-ревью:
 
+- [`docs/SECURITY.md`](./docs/SECURITY.md) — модель угроз, защита от утечек данных, CSP, изоляция сети и остаточные риски (T2.6).
 - [`docs/PROJECT_HISTORY.md`](./docs/PROJECT_HISTORY.md) — сводная хронологическая документация по всему проекту (`T0`, `T1`, `T2`, исправления по ревью и стабилизация `T2.5 / T2.5b / T2.5c`).
 - [`docs/PR_T2_5_stabilize.md`](./docs/PR_T2_5_stabilize.md) — отчёт и описание PR по задаче **T2.5 / T2.5b / T2.5c** («Стабилизация перед пилотом»).
 - [`docs/ANTIGRAVITY_T2_5_PROMPT.md`](./docs/ANTIGRAVITY_T2_5_PROMPT.md) — подробная инструкция и готовый промпт **T2.5b + T2.5c** для агента с доступом к интернету и браузеру (`npm install`, `npm ci`, E2E в Chromium, живые проверки на `wrangler dev`).
@@ -202,54 +203,82 @@ npm run dev
 4. Включите опцию **Require status checks to pass before merging** → **Require branches to be up to date before merging** и выберите статус-проверку **`Verify (Typecheck, Lint, Test, Build, Licenses)`** из workflow `CI` (`.github/workflows/ci.yml`).
 5. Нажмите **Create** / **Save changes**.
 
-## Порядок первого деплоя и выдачи ссылок на пилоте (пошагово для владельца)
+## Безопасный деплой и подготовка к первому запуску с реальными учениками (T2.6)
 
-Строгий порядок действий при выкатке пилота: **сначала секреты GitHub (`CLOUDFLARE_API_TOKEN` и `CLOUDFLARE_ACCOUNT_ID`) → потом первый деплой (слияние PR в `main`) → потом установка секрета `PILOT_BOARD_IDS` → потом раздача ссылок ученикам**.
+Строгий порядок действий при подготовке и выкатке пилота: **секреты GitHub и окружение `production` → отзыв лишних сессий → слияние PR в `main` → генерация свежих `PILOT_BOARD_IDS` → автоматическая проверка `verify-prod.mjs` → защищённая раздача ссылок ученикам**.
 
-### Шаг 1. Зарегистрируйте бесплатный аккаунт Cloudflare и скопируйте `CLOUDFLARE_ACCOUNT_ID`
+### Шаг 1. Зарегистрируйте аккаунт Cloudflare и скопируйте `CLOUDFLARE_ACCOUNT_ID`
 
-1. Перейдите на [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up), создайте бесплатный аккаунт и в разделе **Compute (Workers)** → **Workers & Pages** активируйте бесплатный поддомен `<ваш-поддомен>.workers.dev`.
+1. Перейдите на [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up), создайте аккаунт и в разделе **Compute (Workers)** → **Workers & Pages** активируйте бесплатный поддомен `<ваш-поддомен>.workers.dev`.
 2. Скопируйте ваш 32-символьный **Account ID** ([инструкция Cloudflare: Find account and zone IDs](https://developers.cloudflare.com/fundamentals/setup/find-account-and-zone-ids/)).
 
-### Шаг 2. Создайте `CLOUDFLARE_API_TOKEN` и сохраните оба секрета в GitHub Secrets
+### Шаг 2. Создайте узкий токен `CLOUDFLARE_API_TOKEN` и настройте GitHub Environment `production`
 
 1. В панели Cloudflare откройте **Profile** → **API Tokens** → **Create Token** → **Create Custom Token** ([Workers roles and permissions](https://developers.cloudflare.com/workers/authorization/workers/)).
-2. Назовите токен `github-actions-online-board-deploy` и выдайте ровно 2 разрешения уровня аккаунта:
+2. Назовите токен `github-actions-online-board-deploy` и задайте минимально необходимые права уровня аккаунта:
    - `Account` — `Workers Scripts` — `Edit`
    - `Account` — `Account Settings` — `Read`
-3. Ограничьте **Account Resources** своим аккаунтом, создайте токен и скопируйте его (никогда не вставляйте токен в код или в чат с ИИ).
-4. В вашем приватном репозитории на GitHub откройте **Settings** → **Secrets and variables** → **Actions** → **New repository secret** и сохраните:
-   - `CLOUDFLARE_ACCOUNT_ID`
-   - `CLOUDFLARE_API_TOKEN`
+3. Ограничьте **Account Resources** конкретным аккаунтом и задайте разумный срок действия (TTL). Скопируйте полученный токен (никогда не вставляйте токен в код или открытые чаты).
+4. В репозитории на GitHub перейдите в **Settings** → **Environments** → нажмите **New environment** и введите имя:
+   ```text
+   production
+   ```
+5. В настройках окружения `production`:
+   - Включите **Deployment branches and tags** → **Selected branches** → добавьте ветку `main` (это гарантирует, что деплойные секреты недоступны сторонним веткам и pull request'ам).
+   - В блоке **Environment secrets** добавьте:
+     - `CLOUDFLARE_ACCOUNT_ID`
+     - `CLOUDFLARE_API_TOKEN`
 
-### Шаг 3. Выполните первый деплой (слейте зелёный PR в `main`)
+### Шаг 3. Отозовите локальные сессии `wrangler login`
 
-1. После того как все проверки в Pull Request прошли зелёным, слейте PR в ветку `main`.
-2. Слияние в `main` автоматически запустит `.github/workflows/deploy.yml` ([cloudflare/wrangler-action](https://github.com/cloudflare/wrangler-action)), который создаст Worker `online-board` в вашем аккаунте Cloudflare.
-3. Проверьте, что Worker отвечает:
+Если тестирование или первичный деплой производились через браузерную авторизацию `npx wrangler login` на вашем компьютере, выполните выход и отзовите сессию в профиле Cloudflare:
+
+```bash
+npx wrangler logout
+```
+
+### Шаг 4. Слейте проверенный PR в `main` и дождитесь автоматического деплоя
+
+1. После успешного прохождения всех проверок в ветке `task/T2.6-security` слейте Pull Request в ветку `main`.
+2. В GitHub Actions автоматически запустится рабочий процесс `.github/workflows/deploy.yml`, который выполнит проверку лицензий, typecheck, lint, интеграционные тесты с SQLite рантаймом, сборку фронтенда и выкатку Worker через `cloudflare/wrangler-action`.
+3. Убедитесь, что Worker доступен и отдает статус 200:
    ```bash
    curl https://online-board.<ваш-поддомен>.workers.dev/api/health
    # Ответ: {"ok":true,"version":"0.1.0"}
    ```
-   _(Обратите внимание: пока секрет `PILOT_BOARD_IDS` ещё не задан, при `ALLOW_ANY_BOARD_ID = "false"` первый деплой безопасно отвечает `404` на любые запросы к `/ws/*`)._
+   _(Пока секрет `PILOT_BOARD_IDS` не задан, сервер безопасно отвечает единым кодом `404` на любые попытки соединения по WebSocket к `/ws/*`)._
 
-### Шаг 4. Сгенерируйте ID досок и задайте секрет `PILOT_BOARD_IDS`
+### Шаг 5. Сгенерируйте свежие `PILOT_BOARD_IDS` и загрузите в секреты Worker
 
-1. Сгенерируйте 10 случайных 22-символьных base62 ID досок (по одной на каждого ученика пилота):
+В целях безопасности не используйте ID, которые вводились в терминале во время разработки или отладки с ИИ-агентами. Сгенерируйте чистый пул идентификаторов:
+
+1. Запустите генератор на 10 случайных 22-символьных base62 ID:
    ```bash
    npm run gen:board-id -- 10
    ```
-2. Запишите список этих ID через запятую в секрет созданного Worker (из папки `worker/`):
+2. Загрузите список этих ID через запятую в секрет Worker:
    ```bash
    cd worker
    npx wrangler secret put PILOT_BOARD_IDS
    ```
-   Когда Wrangler запросит `Enter a secret value:`, вставьте строку ID через запятую без пробелов (`ID1,ID2,...,ID10`) и нажмите `Enter`.
+   При запросе `Enter a secret value:` вставьте сгенерированную строку без пробелов (`ID1,ID2,...,ID10`) и нажмите `Enter`.
 
-### Шаг 5. Раздайте персональные ссылки ученикам
+### Шаг 6. Запустите автоматическую проверку безопасности боевого сервиса
 
-1. Запишите соответствие ID ученикам в свои заметки и отправьте каждому ученику его персональную ссылку:
+Проверьте корректность заголовков безопасности, отсутствие `'unsafe-inline'`/`'unsafe-eval'`, запрет роботов и единый 404:
+
+```bash
+node scripts/verify-prod.mjs https://online-board.<ваш-поддомен>.workers.dev
+```
+
+Все проверки в итоговой таблице отчёта должны получить статус `✅ PASS`.
+Также откройте доску в Safari (macOS или iOS) и убедитесь, что соединение устанавливается штатно.
+
+### Шаг 7. Раздайте персональные ссылки ученикам через защищённые каналы
+
+1. Назначьте по одному сгенерированному ID каждому ученику пилота.
+2. Отправляйте ссылки **строго через личные сообщения** (Telegram, личный email, защищённый мессенджер), ни в коем случае не публикуя их в открытых каналах или группах:
    ```text
    https://online-board.<ваш-поддомен>.workers.dev/b/<ID_ДОСКИ_УЧЕНИКА>
    ```
-2. Ученик открывает ссылку в браузере, вводит ник в диалоге «Как вас зовут на доске?» и сразу попадает на совместную доску. Во вкладке **Network** (`F12`) убедитесь, что все ресурсы и шрифты грузятся только с вашего домена со статусом `200`.
+3. Подробнее о модели угроз и защите данных читайте в [`docs/SECURITY.md`](./docs/SECURITY.md).

@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import WebSocket from "ws";
 
 const DEFAULT_WS_SMOKE_URL = "ws://localhost:8787";
 const BOARD_ID = process.env.WS_SMOKE_BOARD_ID || "SmokeTestBoard12345678";
+
+function toBoardRef(boardId) {
+  return crypto.createHash("sha256").update(boardId).digest("hex").slice(0, 8);
+}
 
 function waitForMessage(ws, predicate, timeoutMs = 5000) {
   return new Promise((resolveMsg, rejectMsg) => {
@@ -35,6 +40,7 @@ function connectWs(url) {
 async function main() {
   const baseUrl = (process.env.WS_SMOKE_URL || DEFAULT_WS_SMOKE_URL).replace(/\/$/, "");
   console.log(`[ws-smoke] Подключение к серверу Worker (wrangler dev): ${baseUrl}`);
+  console.log(`[ws-smoke] Тестирование доски (ref: ${toBoardRef(BOARD_ID)})`);
 
   const ws1Url = `${baseUrl}/ws/${BOARD_ID}?nick=${encodeURIComponent("Преподаватель")}`;
   const ws2Url = `${baseUrl}/ws/${BOARD_ID}?nick=${encodeURIComponent("Ученик_Анна")}`;

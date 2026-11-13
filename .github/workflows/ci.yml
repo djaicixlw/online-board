@@ -11,15 +11,15 @@ permissions:
 
 jobs:
   verify:
-    name: Verify (Typecheck, Lint, Test, Build, Licenses)
+    name: Verify (Typecheck, Lint, Test, Build, Licenses, Audit)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
           node-version: "22"
           cache: "npm"
@@ -29,6 +29,10 @@ jobs:
 
       - name: Check dependency licenses
         run: npm run check:licenses
+
+      - name: Audit production dependencies (reporting known upstream Excalidraw transitive alerts)
+        run: npm audit --omit=dev
+        continue-on-error: true
 
       - name: Run TypeScript typecheck
         run: npm run typecheck

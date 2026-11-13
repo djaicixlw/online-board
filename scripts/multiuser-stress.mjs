@@ -1,8 +1,30 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import WebSocket from "ws";
 
-const WS_URL = process.env.WS_URL || "wss://online-board.aghaskdbbb.workers.dev";
-const BOARD_ID = process.env.BOARD_ID || "Mo23Z58APZ0yRwkkM6gutm";
+const args = process.argv.slice(2);
+const allowRemote = args.includes("--i-know-this-spends-quota");
+const rawTarget = process.env.WS_URL || "ws://localhost:8787";
+const isLocalhost =
+  rawTarget.includes("localhost") ||
+  rawTarget.includes("127.0.0.1") ||
+  rawTarget.startsWith("ws://127.0.0.1") ||
+  rawTarget.startsWith("ws://localhost");
+
+if (!isLocalhost && !allowRemote) {
+  console.error(
+    "ОТКАЗ: scripts/multiuser-stress.mjs по умолчанию работает только с локальным wrangler dev (localhost / 127.0.0.1).\n" +
+      "Для запуска против удалённого хоста передайте явный флаг: --i-know-this-spends-quota",
+  );
+  process.exit(1);
+}
+
+const WS_URL = rawTarget.replace(/\/$/, "");
+const BOARD_ID = process.env.BOARD_ID || "StressTestBoard1234567";
+
+function toBoardRef(id) {
+  return crypto.createHash("sha256").update(id).digest("hex").slice(0, 8);
+}
 
 function waitForMessage(ws, predicate, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
@@ -182,7 +204,7 @@ async function run() {
   console.log(`=======================================================`);
   console.log(`🚀 ЗАПУСК СТРЕСС-ТЕСТИРОВАНИЯ: 10 АКТИВНЫХ АГЕНТОВ ОНЛАЙН`);
   console.log(`🎯 Целевой сервер: ${WS_URL}`);
-  console.log(`📋 ID доски: ${BOARD_ID}`);
+  console.log(`📋 Ref доски: ${toBoardRef(BOARD_ID)}`);
   console.log(`=======================================================\n`);
 
   const stateByClient = new Map();

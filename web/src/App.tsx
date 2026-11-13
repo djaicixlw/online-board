@@ -2,6 +2,7 @@ import {
   CaptureUpdateAction,
   Excalidraw,
   MainMenu,
+  WelcomeScreen,
   reconcileElements as excalidrawReconcileElements,
 } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
@@ -203,6 +204,44 @@ export function App() {
       collabClientRef.current = null;
     };
   }, [boardId, applyRemoteScene]);
+
+  // Security: eliminate external promotional/tracking links from Excalidraw subtrees
+  // and guarantee rel="noopener noreferrer" for any valid external anchors in the DOM
+  useEffect(() => {
+    const sanitizeAnchors = () => {
+      const anchors = document.querySelectorAll<HTMLAnchorElement>("a[href]");
+      for (const a of anchors) {
+        try {
+          const rawHref = a.getAttribute("href") ?? "";
+          if (rawHref.startsWith("http://") || rawHref.startsWith("https://")) {
+            const parsed = new URL(rawHref, window.location.href);
+            if (parsed.origin !== window.location.origin) {
+              if (
+                parsed.hostname.includes("twitter.com") ||
+                parsed.hostname.includes("x.com") ||
+                parsed.hostname.includes("discord.gg") ||
+                parsed.hostname.includes("plus.excalidraw.com") ||
+                parsed.hostname.includes("github.com/excalidraw")
+              ) {
+                a.remove();
+                continue;
+              }
+              a.rel = "noopener noreferrer";
+            }
+          }
+        } catch {
+          // ignore unparseable
+        }
+      }
+    };
+
+    sanitizeAnchors();
+    const observer = new MutationObserver(() => {
+      sanitizeAnchors();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
 
   // Smooth 60 FPS cursor interpolation loop that only triggers React state updates when
   // cursors actually move, appear, or expire (fixing Review #5)
@@ -642,6 +681,11 @@ export function App() {
             <MainMenu.DefaultItems.ToggleTheme />
             <MainMenu.DefaultItems.ChangeCanvasBackground />
           </MainMenu>
+          <WelcomeScreen>
+            <WelcomeScreen.Center>
+              <WelcomeScreen.Center.Heading>{RU_STRINGS.appTitle}</WelcomeScreen.Center.Heading>
+            </WelcomeScreen.Center>
+          </WelcomeScreen>
         </Excalidraw>
       </div>
 

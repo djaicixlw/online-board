@@ -38,23 +38,23 @@ describe("Task T1, T2.5, T2.5b & T2.5c: Board Room Durable Object, Pilot Access 
   it("validates GET /ws/:id?nick=<ник> and enforces ALLOW_ANY_BOARD_ID vs PILOT_BOARD_IDS", async () => {
     const harness = createBoardTestHarness(Board);
 
-    // Invalid board id length
+    // Invalid board id length returns unified 404 (T2.6)
     const badIdRes = await worker.fetch(
       new Request("http://localhost:8787/ws/shortId?nick=Alice", {
         headers: { Upgrade: "websocket" },
       }),
       harness.env,
     );
-    expect(badIdRes.status).toBe(400);
+    expect(badIdRes.status).toBe(404);
 
-    // Invalid non-base62 chars in board id
+    // Invalid non-base62 chars in board id returns unified 404 (T2.6)
     const nonBase62Res = await worker.fetch(
       new Request("http://localhost:8787/ws/AbCdEfGhIjKlMnOpQrSt_2?nick=Alice", {
         headers: { Upgrade: "websocket" },
       }),
       harness.env,
     );
-    expect(nonBase62Res.status).toBe(400);
+    expect(nonBase62Res.status).toBe(404);
 
     // Empty / control-char-only nick
     const badNickRes = await worker.fetch(

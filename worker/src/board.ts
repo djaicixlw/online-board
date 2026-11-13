@@ -226,6 +226,94 @@ function toUint8Array(data: unknown): Uint8Array {
 }
 
 /**
+ * Computes an 8-character hex reference (SHA-256 slice) from a board ID.
+ * Used for logging and metrics to ensure full board IDs are never leaked.
+ */
+export function toBoardRef(boardId: string): string {
+  function rightRotate(value: number, amount: number): number {
+    return (value >>> amount) | (value << (32 - amount));
+  }
+  const mathPow = Math.pow;
+  const maxWord = mathPow(2, 32);
+  let i: number;
+  let j: number;
+  let result = "";
+  const words: number[] = [];
+  let ascii = boardId;
+  const asciiBitLength = ascii.length * 8;
+  const hash: number[] = [];
+  const k: number[] = [];
+  let primeCounter = 0;
+  const isPrime: Record<number, number> = {};
+
+  for (let candidate = 2; primeCounter < 64; candidate++) {
+    if (!isPrime[candidate]) {
+      for (i = 0; i < 313; i += candidate) {
+        isPrime[i] = candidate;
+      }
+      hash[primeCounter] = (mathPow(candidate, 0.5) * maxWord) | 0;
+      k[primeCounter++] = (mathPow(candidate, 1 / 3) * maxWord) | 0;
+    }
+  }
+
+  ascii += "\x80";
+  while ((ascii.length % 64) - 56) ascii += "\x00";
+  for (i = 0; i < ascii.length; i++) {
+    j = ascii.charCodeAt(i);
+    words[i >> 2] = (words[i >> 2] ?? 0) | (j << (((3 - i) % 4) * 8));
+  }
+  words[words.length] = (asciiBitLength / maxWord) | 0;
+  words[words.length] = asciiBitLength;
+
+  for (j = 0; j < words.length;) {
+    const w = words.slice(j, (j += 16));
+    const oldHash = hash.slice(0);
+    for (i = 0; i < 64; i++) {
+      const w15 = w[i - 15] ?? 0;
+      const w2 = w[i - 2] ?? 0;
+      const a = hash[0] ?? 0;
+      const e = hash[4] ?? 0;
+      const temp1 =
+        (hash[7] ?? 0) +
+        (rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25)) +
+        ((e & (hash[5] ?? 0)) ^ (~e & (hash[6] ?? 0))) +
+        (k[i] ?? 0) +
+        (w[i] =
+          i < 16
+            ? (w[i] ?? 0)
+            : ((w[i - 16] ?? 0) +
+                (rightRotate(w15, 7) ^ rightRotate(w15, 18) ^ (w15 >>> 3)) +
+                (w[i - 7] ?? 0) +
+                (rightRotate(w2, 17) ^ rightRotate(w2, 19) ^ (w2 >>> 10))) |
+              0);
+      const temp2 =
+        (rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22)) +
+        ((a & (hash[1] ?? 0)) ^ (a & (hash[2] ?? 0)) ^ ((hash[1] ?? 0) & (hash[2] ?? 0)));
+
+      hash[7] = hash[6] ?? 0;
+      hash[6] = hash[5] ?? 0;
+      hash[5] = hash[4] ?? 0;
+      hash[4] = ((hash[3] ?? 0) + temp1) | 0;
+      hash[3] = hash[2] ?? 0;
+      hash[2] = hash[1] ?? 0;
+      hash[1] = hash[0] ?? 0;
+      hash[0] = (temp1 + temp2) | 0;
+    }
+    for (i = 0; i < 8; i++) {
+      hash[i] = ((hash[i] ?? 0) + (oldHash[i] ?? 0)) | 0;
+    }
+  }
+
+  for (i = 0; i < 8; i++) {
+    for (j = 3; j >= 0; j--) {
+      const b = ((hash[i] ?? 0) >> (j * 8)) & 255;
+      result += (b < 16 ? "0" : "") + b.toString(16);
+    }
+  }
+  return result.slice(0, 8);
+}
+
+/**
  * Computes a deterministic dual-hash digest + byteLength for a snapshot chunk
  * so `flushSnapshot` only writes chunks whose content actually changed.
  */
@@ -269,6 +357,12 @@ export class Board extends DurableObject<Env> {
   readonly maxSnapshotBytes: number;
 
   private boardId = "unknown";
+  private boardRef = "unknown";
+
+  private setBoardId(id: string): void {
+    this.boardId = id;
+    this.boardRef = toBoardRef(id);
+  }
   private readonly elements = new Map<string, ExcalidrawElementRecord>();
   private readonly elementByteLengths = new Map<string, number>();
   private totalElementsBytes = 0;
@@ -311,7 +405,7 @@ export class Board extends DurableObject<Env> {
       for (const ws of this.ctx.getWebSockets()) {
         const attachment = this.readAttachment(ws);
         if (attachment?.boardId && this.boardId === "unknown") {
-          this.boardId = attachment.boardId;
+          this.setBoardId(attachment.boardId);
         }
         if (attachment && !attachment.rejected) {
           this.sessions.set(ws, {
@@ -373,7 +467,7 @@ export class Board extends DurableObject<Env> {
     }
     const attachment = this.readAttachment(ws);
     if (attachment?.boardId && this.boardId === "unknown") {
-      this.boardId = attachment.boardId;
+      this.setBoardId(attachment.boardId);
     }
     if (!attachment || attachment.rejected) {
       return null;
@@ -479,7 +573,7 @@ export class Board extends DurableObject<Env> {
       console.log(
         JSON.stringify({
           event: "snapshot_corrupted_backup_saved",
-          boardId: this.boardId,
+          boardRef: this.boardRef,
           chunksBackedUp: byteChunks.length,
           error: errorMsg,
           timestamp: nowMs,
@@ -490,7 +584,7 @@ export class Board extends DurableObject<Env> {
       console.log(
         JSON.stringify({
           event: "snapshot_corrupted_backup_failed",
-          boardId: this.boardId,
+          boardRef: this.boardRef,
           error: backupErr instanceof Error ? backupErr.message : String(backupErr),
           originalError: errorMsg,
           timestamp: nowMs,
@@ -568,7 +662,7 @@ export class Board extends DurableObject<Env> {
       console.log(
         JSON.stringify({
           event: "snapshot_load_error",
-          boardId: this.boardId,
+          boardRef: this.boardRef,
           error: errorMsg,
         }),
       );
@@ -626,7 +720,7 @@ export class Board extends DurableObject<Env> {
       console.log(
         JSON.stringify({
           event: "snapshot_flush_skipped_backup_failed",
-          boardId: this.boardId,
+          boardRef: this.boardRef,
           reason,
           timestamp: nowMs,
         }),
@@ -736,7 +830,7 @@ export class Board extends DurableObject<Env> {
     console.log(
       JSON.stringify({
         event: "snapshot_flush",
-        boardId: this.boardId,
+        boardRef: this.boardRef,
         ...stats,
         timestamp: nowMs,
       }),
@@ -786,7 +880,7 @@ export class Board extends DurableObject<Env> {
       );
     }
 
-    this.boardId = candidateBoardId;
+    this.setBoardId(candidateBoardId);
 
     const activeCount = this.getActiveSessions().length;
     const pair = new WebSocketPair();
@@ -811,8 +905,7 @@ export class Board extends DurableObject<Env> {
       console.log(
         JSON.stringify({
           event: "connection_rejected_limit",
-          boardId: this.boardId,
-          nick,
+          boardRef: this.boardRef,
           activeConnections: activeCount,
           maxConnections: MAX_CONNECTIONS_PER_BOARD,
           timestamp: Date.now(),
@@ -871,9 +964,8 @@ export class Board extends DurableObject<Env> {
         console.log(
           JSON.stringify({
             event: "message_rejected_size",
-            boardId: this.boardId,
+            boardRef: this.boardRef,
             clientId: session.clientId,
-            nick: session.nick,
             byteLength,
             maxBytes: MAX_MESSAGE_BYTES,
             timestamp: nowMs,
@@ -891,9 +983,8 @@ export class Board extends DurableObject<Env> {
         console.log(
           JSON.stringify({
             event: "message_rejected_size",
-            boardId: this.boardId,
+            boardRef: this.boardRef,
             clientId: session.clientId,
-            nick: session.nick,
             byteLength,
             maxBytes: MAX_MESSAGE_BYTES,
             timestamp: nowMs,
@@ -924,9 +1015,8 @@ export class Board extends DurableObject<Env> {
         console.log(
           JSON.stringify({
             event: "connection_closed_rate_limit",
-            boardId: this.boardId,
+            boardRef: this.boardRef,
             clientId: session.clientId,
-            nick: session.nick,
             messagesDropped: session.messagesDropped,
             timestamp: nowMs,
           }),
@@ -944,9 +1034,8 @@ export class Board extends DurableObject<Env> {
       console.log(
         JSON.stringify({
           event: "invalid_message_json",
-          boardId: this.boardId,
+          boardRef: this.boardRef,
           clientId: session.clientId,
-          nick: session.nick,
           timestamp: nowMs,
         }),
       );
@@ -957,9 +1046,8 @@ export class Board extends DurableObject<Env> {
       console.log(
         JSON.stringify({
           event: "invalid_message_shape",
-          boardId: this.boardId,
+          boardRef: this.boardRef,
           clientId: session.clientId,
-          nick: session.nick,
           timestamp: nowMs,
         }),
       );
@@ -972,9 +1060,8 @@ export class Board extends DurableObject<Env> {
       console.log(
         JSON.stringify({
           event: "invalid_message_missing_type",
-          boardId: this.boardId,
+          boardRef: this.boardRef,
           clientId: session.clientId,
-          nick: session.nick,
           timestamp: nowMs,
         }),
       );
@@ -1000,8 +1087,7 @@ export class Board extends DurableObject<Env> {
           console.log(
             JSON.stringify({
               event: "invalid_hello_client_id",
-              boardId: this.boardId,
-              nick: session.nick,
+              boardRef: this.boardRef,
               timestamp: nowMs,
             }),
           );
@@ -1013,7 +1099,7 @@ export class Board extends DurableObject<Env> {
             console.log(
               JSON.stringify({
                 event: "invalid_hello_nick",
-                boardId: this.boardId,
+                boardRef: this.boardRef,
                 clientId: msg.client_id,
                 timestamp: nowMs,
               }),
@@ -1043,9 +1129,8 @@ export class Board extends DurableObject<Env> {
           console.log(
             JSON.stringify({
               event: "invalid_scene_update_elements",
-              boardId: this.boardId,
+              boardRef: this.boardRef,
               clientId: session.clientId,
-              nick: session.nick,
               timestamp: nowMs,
             }),
           );
@@ -1062,9 +1147,8 @@ export class Board extends DurableObject<Env> {
             console.log(
               JSON.stringify({
                 event: "invalid_scene_element",
-                boardId: this.boardId,
+                boardRef: this.boardRef,
                 clientId: session.clientId,
-                nick: session.nick,
                 timestamp: nowMs,
               }),
             );
@@ -1109,9 +1193,8 @@ export class Board extends DurableObject<Env> {
           console.log(
             JSON.stringify({
               event: "board_too_large_rejected",
-              boardId: this.boardId,
+              boardRef: this.boardRef,
               clientId: session.clientId,
-              nick: session.nick,
               prospectiveCount,
               maxBoardElements: this.maxBoardElements,
               prospectiveSnapshotBytes,
@@ -1154,9 +1237,8 @@ export class Board extends DurableObject<Env> {
           console.log(
             JSON.stringify({
               event: "invalid_cursor_coordinates",
-              boardId: this.boardId,
+              boardRef: this.boardRef,
               clientId: session.clientId,
-              nick: session.nick,
               timestamp: nowMs,
             }),
           );
@@ -1183,9 +1265,8 @@ export class Board extends DurableObject<Env> {
         console.log(
           JSON.stringify({
             event: "invalid_message_unknown_type",
-            boardId: this.boardId,
+            boardRef: this.boardRef,
             clientId: session.clientId,
-            nick: session.nick,
             messageType: msgType,
             timestamp: nowMs,
           }),
@@ -1246,9 +1327,8 @@ export class Board extends DurableObject<Env> {
     console.log(
       JSON.stringify({
         event: "connection_close",
-        boardId: this.boardId,
+        boardRef: this.boardRef,
         clientId: session.clientId,
-        nick: session.nick,
         code,
         sessionMessagesAccepted: session.messagesAccepted,
         sessionMessagesDropped: session.messagesDropped,
@@ -1284,9 +1364,8 @@ export class Board extends DurableObject<Env> {
     console.log(
       JSON.stringify({
         event: "websocket_error",
-        boardId: this.boardId,
+        boardRef: this.boardRef,
         clientId: session?.clientId ?? null,
-        nick: session?.nick ?? null,
         error: error instanceof Error ? error.message : String(error),
         timestamp: Date.now(),
       }),
@@ -1313,6 +1392,7 @@ export class Board extends DurableObject<Env> {
   public getMetrics() {
     return {
       boardId: this.boardId,
+      boardRef: this.boardRef,
       saveIntervalMs: this.saveIntervalMs,
       elementsCount: this.elements.size,
       estimatedSnapshotBytes: this.estimateSnapshotBytes(
