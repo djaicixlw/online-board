@@ -554,6 +554,15 @@ export default function BoardView({ boardId }: { boardId: string }) {
           {RU_STRINGS.openExcalidrawFileButton}
         </button>
 
+        <a
+          href="/teacher"
+          className="board-top-chip"
+          title={RU_STRINGS.goToTeacherCabinet}
+          data-testid="teacher-cabinet-link"
+        >
+          {RU_STRINGS.teacherCabinetTitle}
+        </a>
+
         <input
           ref={fileInputRef}
           type="file"
