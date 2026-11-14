@@ -27,7 +27,7 @@ new_sqlite_classes = ["Board"]
 [[d1_databases]]
 binding = "DB"
 database_name = "online-board-db"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "3da291d6-1368-49ff-b790-1990bb182264"
 migrations_dir = "migrations"
 
 # Переменные окружения по умолчанию (для продакшена и пилота).

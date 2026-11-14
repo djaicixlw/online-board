@@ -49,6 +49,14 @@ jobs:
       - name: Build frontend static assets (web/dist) and dry-run worker
         run: npm run build
 
+      - name: Apply Cloudflare D1 migrations
+        uses: cloudflare/wrangler-action@392082e81ffbcb9ebdde27400634aa004b35ea37 # v3.14.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          command: d1 migrations apply online-board-db --remote
+
       - name: Deploy Worker with Static Assets to Cloudflare
         uses: cloudflare/wrangler-action@392082e81ffbcb9ebdde27400634aa004b35ea37 # v3.14.0
         with:
