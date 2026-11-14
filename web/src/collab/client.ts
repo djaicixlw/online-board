@@ -345,7 +345,7 @@ export class BoardCollabClient {
     const elapsed = nowMs - this.lastSceneSentAt;
 
     if (elapsed >= SCENE_SYNC_INTERVAL_MS && this.sceneBatchTimer === null) {
-      this.flushSceneChangesNow();
+      this.flushSceneChangesNow(currentElements);
       return;
     }
 
