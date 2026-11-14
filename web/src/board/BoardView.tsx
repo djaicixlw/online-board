@@ -16,7 +16,6 @@ import {
   ImageDownloadManager,
   isFileUploaded,
   loadSavedNickname,
-  markFileUploaded,
   MAX_EXCALIDRAW_FILE_BYTES,
   mergeSceneElements,
   parseExcalidrawDocument,
@@ -586,7 +585,6 @@ export default function BoardView({ boardId }: { boardId: string }) {
         collabClientRef.current?.queueSceneUpdate(nextElements);
         collabClientRef.current?.flushSceneOnPointerRelease(nextElements);
 
-        markFileUploaded(fileId);
         uploadBoardFile(boardId, fileId, mimeType, arrayBuffer, () => {
           setBannerError(RU_STRINGS.imageQuotaExceededError);
         }).catch(() => {
@@ -903,7 +901,6 @@ export default function BoardView({ boardId }: { boardId: string }) {
                   fileObj &&
                   typeof fileObj.dataURL === "string"
                 ) {
-                  markFileUploaded(fId);
                   try {
                     const blob = dataUrlToBlob(fileObj.dataURL);
                     blob

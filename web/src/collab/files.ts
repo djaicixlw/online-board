@@ -176,17 +176,19 @@ export async function compressImageFile(file: File | Blob): Promise<CompressedIm
 
 // In-memory session set of already uploaded file IDs (prevents duplicate uploads in one session)
 const sessionUploadedFileIds = new Set<string>();
+const inFlightUploads = new Set<string>();
 
 export function markFileUploaded(fileId: string): void {
   sessionUploadedFileIds.add(fileId);
 }
 
 export function isFileUploaded(fileId: string): boolean {
-  return sessionUploadedFileIds.has(fileId);
+  return sessionUploadedFileIds.has(fileId) || inFlightUploads.has(fileId);
 }
 
 export function clearUploadedFilesForTesting(): void {
   sessionUploadedFileIds.clear();
+  inFlightUploads.clear();
 }
 
 /**
@@ -202,45 +204,53 @@ export async function uploadBoardFile(
   if (sessionUploadedFileIds.has(fileId)) {
     return true;
   }
-
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const res = await fetch(`/api/boards/${boardId}/files/${fileId}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": mimeType,
-        },
-        body: arrayBuffer,
-      });
-
-      if (res.ok) {
-        sessionUploadedFileIds.add(fileId);
-        return true;
-      }
-
-      if (res.status === 507) {
-        onQuotaExceeded?.();
-        return false;
-      }
-
-      if (
-        res.status === 413 ||
-        res.status === 415 ||
-        res.status === 400 ||
-        res.status === 403 ||
-        res.status === 404
-      ) {
-        return false;
-      }
-    } catch (err) {
-      if (attempt === 2) {
-        throw err;
-      }
-    }
-    // Exponential backoff: 500ms, 1000ms
-    await new Promise((resolve) => setTimeout(resolve, 500 * Math.pow(2, attempt)));
+  if (inFlightUploads.has(fileId)) {
+    return true;
   }
-  return false;
+
+  inFlightUploads.add(fileId);
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await fetch(`/api/boards/${boardId}/files/${fileId}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": mimeType,
+          },
+          body: arrayBuffer,
+        });
+
+        if (res.ok) {
+          sessionUploadedFileIds.add(fileId);
+          return true;
+        }
+
+        if (res.status === 507) {
+          onQuotaExceeded?.();
+          return false;
+        }
+
+        if (
+          res.status === 413 ||
+          res.status === 415 ||
+          res.status === 400 ||
+          res.status === 403 ||
+          res.status === 404
+        ) {
+          return false;
+        }
+      } catch (err) {
+        if (attempt === 2) {
+          throw err;
+        }
+      }
+      // Exponential backoff: 500ms, 1000ms
+      await new Promise((resolve) => setTimeout(resolve, 500 * Math.pow(2, attempt)));
+    }
+    return false;
+  } finally {
+    inFlightUploads.delete(fileId);
+  }
 }
 
 export interface LoadedImageFile {
