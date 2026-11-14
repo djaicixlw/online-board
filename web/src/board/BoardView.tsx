@@ -4,6 +4,7 @@ import {
   MainMenu,
   WelcomeScreen,
   reconcileElements as excalidrawReconcileElements,
+  restoreElements,
 } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -53,6 +54,14 @@ interface ExcalidrawImperativeAPILike {
 }
 
 const wrappedReconcile: ReconcileElementsFn = (localElements, remoteElements, localAppState) => {
+  const safeLocal = restoreElements(
+    localElements as unknown as Parameters<typeof restoreElements>[0],
+    null,
+  );
+  const safeRemote = restoreElements(
+    remoteElements as unknown as Parameters<typeof restoreElements>[0],
+    null,
+  );
   if (typeof excalidrawReconcileElements === "function") {
     try {
       const fn = excalidrawReconcileElements as unknown as (
@@ -60,18 +69,15 @@ const wrappedReconcile: ReconcileElementsFn = (localElements, remoteElements, lo
         remote: readonly ExcalidrawElementLike[],
         appState: Record<string, unknown>,
       ) => ExcalidrawElementLike[];
-      const res = fn(localElements, remoteElements, localAppState);
-      if (
-        Array.isArray(res) &&
-        res.length >= Math.max(localElements.length, remoteElements.length)
-      ) {
+      const res = fn(safeLocal, safeRemote, localAppState);
+      if (Array.isArray(res) && res.length >= Math.max(safeLocal.length, safeRemote.length)) {
         return res;
       }
     } catch {
       // Fallback to deterministic version/versionNonce reconciliation
     }
   }
-  return mergeSceneElements(localElements, remoteElements, localAppState);
+  return mergeSceneElements(safeLocal, safeRemote, localAppState);
 };
 
 export default function BoardView({ boardId }: { boardId: string }) {
@@ -113,8 +119,12 @@ export default function BoardView({ boardId }: { boardId: string }) {
 
   const applyRemoteScene = useCallback(
     (mergedElements: ExcalidrawElementLike[], nextCollaborators?: CollaboratorInfo[]) => {
-      latestElementsRef.current = mergedElements;
-      setSceneElementCount(mergedElements.filter((el) => el.isDeleted !== true).length);
+      const restored = restoreElements(
+        mergedElements as unknown as Parameters<typeof restoreElements>[0],
+        null,
+      );
+      latestElementsRef.current = restored;
+      setSceneElementCount(restored.filter((el) => el.isDeleted !== true).length);
       const api = excalidrawApiRef.current;
       if (!api) {
         return;
@@ -125,7 +135,7 @@ export default function BoardView({ boardId }: { boardId: string }) {
           elements: readonly ExcalidrawElementLike[];
           captureUpdate?: unknown;
         } = {
-          elements: mergedElements,
+          elements: restored,
         };
         if (
           CaptureUpdateAction &&
@@ -634,7 +644,15 @@ export default function BoardView({ boardId }: { boardId: string }) {
           langCode={RU_LOCALE_CODE}
           generateIdForFile={handleGenerateIdForFile}
           excalidrawAPI={(api: unknown) => {
-            excalidrawApiRef.current = api as ExcalidrawImperativeAPILike;
+            const typedApi = api as ExcalidrawImperativeAPILike;
+            excalidrawApiRef.current = typedApi;
+            if (latestElementsRef.current && latestElementsRef.current.length > 0) {
+              const safeElements = restoreElements(
+                latestElementsRef.current as unknown as Parameters<typeof restoreElements>[0],
+                null,
+              );
+              typedApi.updateScene({ elements: safeElements });
+            }
           }}
           initialData={{
             appState: {
