@@ -127,6 +127,16 @@ export default function BoardView({ boardId }: { boardId: string }) {
       setSceneElementCount(restored.filter((el) => el.isDeleted !== true).length);
       const api = excalidrawApiRef.current;
       if (!api) {
+        // Even if api is not yet mounted, request missing files in the background
+        const neededFileIds: string[] = [];
+        for (const el of restored) {
+          if (!el.isDeleted && el.type === "image" && typeof el.fileId === "string" && el.fileId) {
+            neededFileIds.push(el.fileId);
+          }
+        }
+        if (neededFileIds.length > 0) {
+          downloadManagerRef.current?.requestFiles(neededFileIds);
+        }
         return;
       }
       isApplyingRemoteRef.current = true;
@@ -153,19 +163,17 @@ export default function BoardView({ boardId }: { boardId: string }) {
       }
 
       // T4: Identify remote image elements that are not yet loaded in Excalidraw
-      if (api && typeof api.getFiles === "function") {
-        const existingFiles = api.getFiles() || {};
-        const neededFileIds: string[] = [];
-        for (const el of mergedElements) {
-          if (!el.isDeleted && el.type === "image" && typeof el.fileId === "string" && el.fileId) {
-            if (!existingFiles[el.fileId]) {
-              neededFileIds.push(el.fileId);
-            }
+      const existingFiles = api.getFiles?.() || {};
+      const neededFileIds: string[] = [];
+      for (const el of restored) {
+        if (!el.isDeleted && el.type === "image" && typeof el.fileId === "string" && el.fileId) {
+          if (!existingFiles[el.fileId]) {
+            neededFileIds.push(el.fileId);
           }
         }
-        if (neededFileIds.length > 0) {
-          downloadManagerRef.current?.requestFiles(neededFileIds);
-        }
+      }
+      if (neededFileIds.length > 0) {
+        downloadManagerRef.current?.requestFiles(neededFileIds);
       }
     },
     [],
@@ -178,7 +186,11 @@ export default function BoardView({ boardId }: { boardId: string }) {
     }
 
     downloadManagerRef.current = new ImageDownloadManager(boardId, (file) => {
-      excalidrawApiRef.current?.addFiles?.([file]);
+      const api = excalidrawApiRef.current;
+      if (api) {
+        api.addFiles?.([file]);
+        api.updateScene({});
+      }
     });
 
     const clientId = getOrCreateClientId();
@@ -489,6 +501,146 @@ export default function BoardView({ boardId }: { boardId: string }) {
     [boardId],
   );
 
+  const insertImageFile = useCallback(
+    async (file: File | Blob, clientX?: number, clientY?: number) => {
+      try {
+        const { fileId, mimeType, arrayBuffer, dataUrl, width, height } =
+          await compressImageFile(file);
+        const api = excalidrawApiRef.current;
+        if (!api) {
+          return;
+        }
+
+        api.addFiles?.([
+          {
+            id: fileId,
+            dataURL: dataUrl,
+            mimeType,
+            created: Date.now(),
+          },
+        ]);
+
+        const currentAppState = latestAppStateRef.current || {};
+        const curScrollX =
+          typeof currentAppState.scrollX === "number" ? currentAppState.scrollX : 0;
+        const curScrollY =
+          typeof currentAppState.scrollY === "number" ? currentAppState.scrollY : 0;
+        const zoomObj = currentAppState.zoom as { value?: number } | undefined;
+        const curZoom =
+          zoomObj && typeof zoomObj.value === "number" && zoomObj.value > 0 ? zoomObj.value : 1;
+
+        let posX = -curScrollX + 200;
+        let posY = -curScrollY + 200;
+
+        if (typeof clientX === "number" && typeof clientY === "number") {
+          const container = document.querySelector(".board-canvas-container");
+          const rect = container?.getBoundingClientRect();
+          if (rect) {
+            posX = (clientX - rect.left - curScrollX) / curZoom;
+            posY = (clientY - rect.top - curScrollY) / curZoom;
+          }
+        }
+
+        const rawImage = {
+          type: "image" as const,
+          id: Math.random().toString(36).substring(2, 11),
+          fileId,
+          status: "saved" as const,
+          scale: [1, 1] as [number, number],
+          x: posX,
+          y: posY,
+          width,
+          height,
+          angle: 0,
+          strokeColor: "transparent",
+          backgroundColor: "transparent",
+          fillStyle: "solid",
+          strokeWidth: 1,
+          strokeStyle: "solid",
+          roughness: 1,
+          opacity: 100,
+          groupIds: [],
+          frameId: null,
+          roundness: null,
+          seed: Math.floor(Math.random() * 100000),
+          version: 1,
+          versionNonce: Math.floor(Math.random() * 100000),
+          isDeleted: false,
+          boundElements: null,
+          updated: Date.now(),
+          link: null,
+          locked: false,
+        };
+
+        const restoredList = restoreElements(
+          [rawImage as unknown as NonNullable<Parameters<typeof restoreElements>[0]>[number]],
+          null,
+        );
+        const imageElement = restoredList[0] as unknown as ExcalidrawElementLike;
+        const current = (latestElementsRef.current || []) as ExcalidrawElementLike[];
+        const nextElements = [...current, imageElement];
+
+        latestElementsRef.current = nextElements;
+        setSceneElementCount(nextElements.filter((el) => !el.isDeleted).length);
+        api.updateScene({ elements: nextElements });
+        collabClientRef.current?.queueSceneUpdate(nextElements);
+        collabClientRef.current?.flushSceneOnPointerRelease(nextElements);
+
+        markFileUploaded(fileId);
+        uploadBoardFile(boardId, fileId, mimeType, arrayBuffer, () => {
+          setBannerError(RU_STRINGS.imageQuotaExceededError);
+        }).catch(() => {
+          setBannerError(RU_STRINGS.imageUploadError);
+        });
+      } catch (err: unknown) {
+        if (err instanceof Error && err.message === "image_too_large") {
+          setBannerError(RU_STRINGS.imageTooLargeError);
+        } else {
+          setBannerError(RU_STRINGS.imageUploadError);
+        }
+      }
+    },
+    [boardId],
+  );
+
+  useEffect(() => {
+    const handleWindowPaste = (e: ClipboardEvent) => {
+      const active = document.activeElement;
+      if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) {
+        return;
+      }
+      const items = e.clipboardData?.items;
+      if (items) {
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          if (item && item.type.startsWith("image/")) {
+            const file = item.getAsFile();
+            if (file) {
+              e.preventDefault();
+              e.stopPropagation();
+              insertImageFile(file);
+              return;
+            }
+          }
+        }
+      }
+      const files = e.clipboardData?.files;
+      if (files && files.length > 0) {
+        const file = files[0];
+        if (file && file.type.startsWith("image/")) {
+          e.preventDefault();
+          e.stopPropagation();
+          insertImageFile(file);
+        }
+      }
+    };
+
+    window.addEventListener("paste", handleWindowPaste, { capture: true });
+    return () => {
+      window.removeEventListener("paste", handleWindowPaste, { capture: true });
+    };
+  }, [insertImageFile]);
+
   const statusText =
     connectionStatus === "connecting"
       ? RU_STRINGS.statusConnecting
@@ -639,6 +791,48 @@ export default function BoardView({ boardId }: { boardId: string }) {
         onPointerDownCapture={handleCanvasPointerDownCapture}
         onPointerMoveCapture={handleCanvasPointerMoveCapture}
         onPointerCancelCapture={handleCanvasPointerCancel}
+        onPasteCapture={(e) => {
+          const items = e.clipboardData?.items;
+          if (items) {
+            for (let i = 0; i < items.length; i++) {
+              const item = items[i];
+              if (item && item.type.startsWith("image/")) {
+                const file = item.getAsFile();
+                if (file) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  insertImageFile(file);
+                  return;
+                }
+              }
+            }
+          }
+          const files = e.clipboardData?.files;
+          if (files && files.length > 0) {
+            const file = files[0];
+            if (file && file.type.startsWith("image/")) {
+              e.preventDefault();
+              e.stopPropagation();
+              insertImageFile(file);
+            }
+          }
+        }}
+        onDragOverCapture={(e) => {
+          if (e.dataTransfer?.types?.includes("Files")) {
+            e.preventDefault();
+          }
+        }}
+        onDropCapture={(e) => {
+          const files = e.dataTransfer?.files;
+          if (files && files.length > 0) {
+            const file = files[0];
+            if (file && file.type.startsWith("image/")) {
+              e.preventDefault();
+              e.stopPropagation();
+              insertImageFile(file, e.clientX, e.clientY);
+            }
+          }
+        }}
       >
         <Excalidraw
           langCode={RU_LOCALE_CODE}
@@ -652,6 +846,25 @@ export default function BoardView({ boardId }: { boardId: string }) {
                 null,
               );
               typedApi.updateScene({ elements: safeElements });
+
+              // Check for image elements needing download on initial mount
+              const existingFiles = typedApi.getFiles?.() || {};
+              const needed: string[] = [];
+              for (const el of safeElements) {
+                if (
+                  !el.isDeleted &&
+                  el.type === "image" &&
+                  typeof el.fileId === "string" &&
+                  el.fileId
+                ) {
+                  if (!existingFiles[el.fileId]) {
+                    needed.push(el.fileId);
+                  }
+                }
+              }
+              if (needed.length > 0) {
+                downloadManagerRef.current?.requestFiles(needed);
+              }
             }
           }}
           initialData={{
