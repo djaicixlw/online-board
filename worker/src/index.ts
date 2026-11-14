@@ -161,7 +161,12 @@ async function handleWebSocketUpgrade(request: Request, env: Env, url: URL): Pro
   return addSecurityHeaders(doResponse, true);
 }
 
-async function handleApiRequest(request: Request, env: Env, url: URL): Promise<Response> {
+async function handleApiRequest(
+  request: Request,
+  env: Env,
+  url: URL,
+  _ctx?: ExecutionContext,
+): Promise<Response> {
   if (url.pathname === "/api/health") {
     if (request.method !== "GET" && request.method !== "HEAD") {
       return addSecurityHeaders(
@@ -173,6 +178,157 @@ async function handleApiRequest(request: Request, env: Env, url: URL): Promise<R
       );
     }
     return addSecurityHeaders(createHealthResponse(), true);
+  }
+
+  // T4: Image files storage and retrieval (/api/boards/:id/files/:fileId)
+  const fileMatch = /^\/api\/boards\/([^/]+)\/files\/([0-9a-f]{40})$/.exec(url.pathname);
+  if (fileMatch) {
+    const boardId = fileMatch[1]!;
+    const fileId = fileMatch[2]!;
+
+    if (!isValidBoardId(boardId)) {
+      return addSecurityHeaders(
+        Response.json({ ok: false, error: "Board not found" }, { status: 404 }),
+        true,
+      );
+    }
+
+    const allowed = await isBoardAllowed(boardId, env);
+    if (!allowed) {
+      return addSecurityHeaders(
+        Response.json({ ok: false, error: "Board not found" }, { status: 404 }),
+        true,
+      );
+    }
+
+    if (request.method === "GET") {
+      const cache =
+        typeof caches !== "undefined"
+          ? (caches as unknown as { default?: Cache })?.default
+          : undefined;
+      if (cache) {
+        const cached = await cache.match(request);
+        if (cached) {
+          return cached;
+        }
+      }
+
+      const doId = env.BOARD.idFromName(boardId);
+      const stub = env.BOARD.get(doId);
+      const doRes = await stub.fetch(`http://do/internal/files/${fileId}`);
+      if (!doRes.ok) {
+        return addSecurityHeaders(doRes, true);
+      }
+
+      const securedHeaders = new Headers(doRes.headers);
+      securedHeaders.set("Cache-Control", "public, max-age=31536000, immutable");
+      securedHeaders.set("X-Content-Type-Options", "nosniff");
+      securedHeaders.set("Content-Security-Policy", "default-src 'none'; sandbox");
+
+      const responseToReturn = new Response(doRes.body, {
+        status: 200,
+        headers: securedHeaders,
+      });
+
+      if (cache && _ctx) {
+        _ctx.waitUntil(cache.put(request, responseToReturn.clone()));
+      }
+
+      return responseToReturn;
+    }
+
+    if (request.method === "PUT") {
+      const origin = request.headers.get("Origin");
+      if (origin) {
+        try {
+          const originUrl = new URL(origin);
+          const originHost = originUrl.host;
+          const requestHost = url.host;
+          const originHostname = originUrl.hostname;
+          const requestHostname = url.hostname;
+          const isDevLocalhost =
+            (originHostname === "localhost" || originHostname === "127.0.0.1") &&
+            (requestHostname === "localhost" || requestHostname === "127.0.0.1");
+
+          if (!isDevLocalhost && originHost !== requestHost) {
+            return addSecurityHeaders(
+              Response.json(
+                { ok: false, error: "Cross-origin upload forbidden" },
+                { status: 403 },
+              ),
+              true,
+            );
+          }
+        } catch {
+          return addSecurityHeaders(
+            Response.json({ ok: false, error: "Invalid Origin header" }, { status: 403 }),
+            true,
+          );
+        }
+      }
+
+      const contentType = request.headers.get("Content-Type") || "";
+      if (
+        contentType !== "image/webp" &&
+        contentType !== "image/jpeg" &&
+        contentType !== "image/png"
+      ) {
+        return addSecurityHeaders(
+          Response.json(
+            {
+              ok: false,
+              error:
+                "Unsupported Media Type: expected image/webp, image/jpeg, or image/png",
+            },
+            { status: 415 },
+          ),
+          true,
+        );
+      }
+
+      const contentLengthHeader = request.headers.get("Content-Length");
+      if (contentLengthHeader && Number(contentLengthHeader) > 4 * 1024 * 1024) {
+        return addSecurityHeaders(
+          Response.json({ ok: false, error: "Payload Too Large: max 4 MiB" }, { status: 413 }),
+          true,
+        );
+      }
+
+      const bodyBuf = await request.arrayBuffer();
+      if (bodyBuf.byteLength > 4 * 1024 * 1024) {
+        return addSecurityHeaders(
+          Response.json({ ok: false, error: "Payload Too Large: max 4 MiB" }, { status: 413 }),
+          true,
+        );
+      }
+
+      const digestBuf = await crypto.subtle.digest("SHA-1", bodyBuf);
+      const actualHash = Array.from(new Uint8Array(digestBuf))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+
+      if (actualHash !== fileId) {
+        return addSecurityHeaders(
+          Response.json({ ok: false, error: "SHA-1 mismatch" }, { status: 400 }),
+          true,
+        );
+      }
+
+      const doId = env.BOARD.idFromName(boardId);
+      const stub = env.BOARD.get(doId);
+      const doRes = await stub.fetch(`http://do/internal/files/${fileId}`, {
+        method: "PUT",
+        headers: { "Content-Type": contentType },
+        body: bodyBuf,
+      });
+
+      return addSecurityHeaders(doRes, true);
+    }
+
+    return addSecurityHeaders(
+      Response.json({ ok: false, error: "Method Not Allowed" }, { status: 405 }),
+      true,
+    );
   }
 
   const isKnownCabinetEndpoint =
@@ -681,7 +837,7 @@ export default {
     }
 
     if (url.pathname.startsWith("/api/")) {
-      return handleApiRequest(request, env, url);
+      return handleApiRequest(request, env, url, _ctx);
     }
 
     if (url.pathname === "/ws" || url.pathname.startsWith("/ws/")) {

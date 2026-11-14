@@ -32,6 +32,62 @@ const textDecoder = new TextDecoder();
 // Base wrapper overhead for `{"v":1,"elements":[]}` is 21 bytes
 const SNAPSHOT_JSON_WRAPPER_BYTES = 21;
 
+export const MAX_FILE_BYTES = 4 * 1024 * 1024; // 4 MiB (4,194,304 bytes)
+export const FILE_CHUNK_BYTES = 900 * 1024; // 900 KB (921,600 bytes)
+export const MAX_BOARD_FILES_BYTES = 100 * 1024 * 1024; // 100 MB (104,857,600 bytes)
+export const FILE_TOUCH_THROTTLE_MS = 24 * 60 * 60 * 1000; // 24 hours
+export const FILE_EXPIRATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+export function detectImageMime(
+  bytes: Uint8Array,
+): "image/webp" | "image/jpeg" | "image/png" | null {
+  if (bytes.length < 12) {
+    return null;
+  }
+  // PNG: 89 50 4E 47
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return "image/png";
+  }
+  // JPEG: FF D8 FF
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  // WebP: RIFF (bytes 0..3) ... WEBP (bytes 8..11)
+  if (
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  return null;
+}
+
+export function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i];
+    if (b !== undefined) {
+      binary += String.fromCharCode(b);
+    }
+  }
+  return btoa(binary);
+}
+
+export function base64ToUint8Array(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
 export interface ExcalidrawElementRecord {
   id: string;
   version: number;
@@ -370,6 +426,8 @@ export class Board extends DurableObject<Env> {
   private readonly sessions = new Map<WebSocket, SessionRuntimeState>();
 
   private schemaInitialized = false;
+  private filesTableInitialized = false;
+  private readonly fileLastTouchedInMemory = new Map<string, number>();
   private lastPersistedChunksCount = 0;
   private readonly persistedChunkDigests = new Map<number, string>();
   private snapshotCorrupted = false;
@@ -595,6 +653,24 @@ export class Board extends DurableObject<Env> {
     }
   }
 
+  private ensureFilesTable(sql: SqlStorage): void {
+    if (!this.filesTableInitialized) {
+      sql.exec(
+        "CREATE TABLE IF NOT EXISTS files (" +
+          "file_id TEXT NOT NULL, " +
+          "chunk_idx INTEGER NOT NULL, " +
+          "mime TEXT NOT NULL, " +
+          "total_bytes INTEGER NOT NULL, " +
+          "data BLOB NOT NULL, " +
+          "created_at INTEGER NOT NULL, " +
+          "last_referenced_at INTEGER NOT NULL, " +
+          "PRIMARY KEY (file_id, chunk_idx)" +
+          ") WITHOUT ROWID;",
+      );
+      this.filesTableInitialized = true;
+    }
+  }
+
   private loadSnapshotFromSqlite(): void {
     const sql = this.ctx.storage?.sql;
     if (!sql) {
@@ -805,6 +881,36 @@ export class Board extends DurableObject<Env> {
         }
       }
       stagedChunksCount = chunks.length;
+
+      // T4: Auto-cleanup of unused images and 24h touch throttle
+      this.ensureFilesTable(sql);
+
+      // 1. Gather active fileIds from scene elements
+      const activeFileIds = new Set<string>();
+      for (const el of this.elements.values()) {
+        if (!el.isDeleted && el.type === "image" && typeof el.fileId === "string" && el.fileId) {
+          activeFileIds.add(el.fileId);
+        }
+      }
+
+      // 2. Throttle last_referenced_at updates in SQLite (only if >24 hours passed)
+      for (const fId of activeFileIds) {
+        const lastTouched = this.fileLastTouchedInMemory.get(fId) ?? 0;
+        if (nowMs - lastTouched > FILE_TOUCH_THROTTLE_MS) {
+          const upd = sql.exec(
+            "UPDATE files SET last_referenced_at = ? WHERE file_id = ?",
+            nowMs,
+            fId,
+          );
+          rowsWrittenInFlush += upd.rowsWritten ?? 0;
+          this.fileLastTouchedInMemory.set(fId, nowMs);
+        }
+      }
+
+      // 3. Purge orphaned/unreferenced files older than 30 days
+      const cutoff = nowMs - FILE_EXPIRATION_MS;
+      const delFiles = sql.exec("DELETE FROM files WHERE last_referenced_at < ?", cutoff);
+      rowsWrittenInFlush += delFiles.rowsWritten ?? 0;
     };
 
     if (typeof this.ctx.storage.transactionSync === "function") {
@@ -865,18 +971,73 @@ export class Board extends DurableObject<Env> {
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
-    // Internal management endpoints for Task T3
+    // Internal management endpoints for Task T3 & T4
     if (url.pathname === "/internal/export") {
       const activeElements = Array.from(this.elements.values()).filter((e) => !e.isDeleted);
+      const activeFileIds = new Set<string>();
+      for (const el of activeElements) {
+        if (el.type === "image" && typeof el.fileId === "string" && el.fileId) {
+          activeFileIds.add(el.fileId);
+        }
+      }
+
+      const files: Array<{
+        file_id: string;
+        chunk_idx: number;
+        mime: string;
+        total_bytes: number;
+        data: string;
+      }> = [];
+
+      const sql = this.ctx.storage?.sql;
+      if (sql && activeFileIds.size > 0) {
+        this.ensureFilesTable(sql);
+        for (const fId of activeFileIds) {
+          try {
+            const rows = sql
+              .exec(
+                "SELECT chunk_idx, mime, total_bytes, data FROM files WHERE file_id = ? ORDER BY chunk_idx ASC",
+                fId,
+              )
+              .toArray() as Array<{
+              chunk_idx: number;
+              mime: string;
+              total_bytes: number;
+              data: unknown;
+            }>;
+            for (const r of rows) {
+              const u8 = toUint8Array(r.data);
+              files.push({
+                file_id: fId,
+                chunk_idx: r.chunk_idx,
+                mime: r.mime,
+                total_bytes: r.total_bytes,
+                data: uint8ArrayToBase64(u8),
+              });
+            }
+          } catch {
+            // Ignore if files table missing
+          }
+        }
+      }
+
       return Response.json({
         ok: true,
         elements: activeElements,
+        files,
       });
     }
 
     if (url.pathname === "/internal/import" && request.method === "PUT") {
       const body = (await request.json().catch(() => null)) as {
         elements?: ExcalidrawElementRecord[];
+        files?: Array<{
+          file_id: string;
+          chunk_idx: number;
+          mime: string;
+          total_bytes: number;
+          data: string;
+        }>;
       } | null;
       if (!body || !Array.isArray(body.elements)) {
         return Response.json({ ok: false, error: "Invalid import payload" }, { status: 400 });
@@ -896,9 +1057,183 @@ export class Board extends DurableObject<Env> {
           this.setElementInMemory(resetEl);
         }
       }
+
+      // Import associated image files
+      if (Array.isArray(body.files) && body.files.length > 0) {
+        const sql = this.ctx.storage?.sql;
+        if (sql) {
+          this.ensureFilesTable(sql);
+          for (const f of body.files) {
+            try {
+              const buf = base64ToUint8Array(f.data);
+              sql.exec(
+                "INSERT OR REPLACE INTO files (file_id, chunk_idx, mime, total_bytes, data, created_at, last_referenced_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                f.file_id,
+                f.chunk_idx,
+                f.mime,
+                f.total_bytes,
+                buf,
+                now,
+                now,
+              );
+            } catch (err) {
+              console.error("[board] Error importing file chunk:", err);
+            }
+          }
+        }
+      }
+
       this.dirty = true;
       await this.flushSnapshot("manual");
       return Response.json({ ok: true, elementsCount: this.elements.size });
+    }
+
+    // T4: Internal file endpoints for storing and serving images
+    const matchGetFile = /^\/internal\/files\/([0-9a-f]{40})$/.exec(url.pathname);
+    if (matchGetFile && request.method === "GET") {
+      const fileId = matchGetFile[1]!;
+      const sql = this.ctx.storage?.sql;
+      if (!sql) {
+        return Response.json({ ok: false, error: "Storage not available" }, { status: 500 });
+      }
+      this.ensureFilesTable(sql);
+
+      const rows = sql
+        .exec(
+          "SELECT chunk_idx, mime, total_bytes, data FROM files WHERE file_id = ? ORDER BY chunk_idx ASC",
+          fileId,
+        )
+        .toArray() as Array<{
+        chunk_idx: number;
+        mime: string;
+        total_bytes: number;
+        data: unknown;
+      }>;
+
+      if (rows.length === 0) {
+        return Response.json({ ok: false, error: "File not found" }, { status: 404 });
+      }
+
+      const firstRow = rows[0]!;
+      const mime = firstRow.mime;
+      const totalBytes = firstRow.total_bytes;
+      const combined = new Uint8Array(totalBytes);
+      let offset = 0;
+      for (const r of rows) {
+        const chunk = toUint8Array(r.data);
+        combined.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+
+      return new Response(combined, {
+        status: 200,
+        headers: {
+          "Content-Type": mime,
+          "Cache-Control": "public, max-age=31536000, immutable",
+          "X-Content-Type-Options": "nosniff",
+          "Content-Security-Policy": "default-src 'none'; sandbox",
+        },
+      });
+    }
+
+    const matchPutFile = /^\/internal\/files\/([0-9a-f]{40})$/.exec(url.pathname);
+    if (matchPutFile && request.method === "PUT") {
+      const fileId = matchPutFile[1]!;
+      const sql = this.ctx.storage?.sql;
+      if (!sql) {
+        return Response.json({ ok: false, error: "Storage not available" }, { status: 500 });
+      }
+      this.ensureFilesTable(sql);
+
+      const bodyBuf = await request.arrayBuffer();
+      if (bodyBuf.byteLength > MAX_FILE_BYTES) {
+        return Response.json(
+          { ok: false, error: "Payload Too Large: max 4 MiB" },
+          { status: 413 },
+        );
+      }
+      if (bodyBuf.byteLength === 0) {
+        return Response.json({ ok: false, error: "Empty file body" }, { status: 400 });
+      }
+
+      const bytes = new Uint8Array(bodyBuf);
+      const detectedMime = detectImageMime(bytes);
+      if (!detectedMime) {
+        return Response.json(
+          { ok: false, error: "Unsupported Media Type: expected webp, jpeg, or png" },
+          { status: 415 },
+        );
+      }
+
+      // Verify SHA-1
+      const digestBuf = await crypto.subtle.digest("SHA-1", bytes);
+      const actualHash = Array.from(new Uint8Array(digestBuf))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+
+      if (actualHash !== fileId) {
+        return Response.json(
+          { ok: false, error: "SHA-1 mismatch: computed " + actualHash + " !== " + fileId },
+          { status: 400 },
+        );
+      }
+
+      const now = Date.now();
+
+      // Deduplication check: if file already exists on this board, do not rewrite chunks
+      const existing = sql.exec("SELECT 1 FROM files WHERE file_id = ? LIMIT 1", fileId).toArray();
+      if (existing.length > 0) {
+        const lastTouched = this.fileLastTouchedInMemory.get(fileId) ?? 0;
+        if (now - lastTouched > FILE_TOUCH_THROTTLE_MS) {
+          sql.exec("UPDATE files SET last_referenced_at = ? WHERE file_id = ?", now, fileId);
+          this.fileLastTouchedInMemory.set(fileId, now);
+        }
+        return Response.json({ ok: true, fileId, deduplicated: true }, { status: 200 });
+      }
+
+      // Check 100 MB total board files quota
+      const quotaCheck = sql
+        .exec("SELECT COALESCE(SUM(LENGTH(data)), 0) as total FROM files")
+        .toArray();
+      const currentTotal = Number((quotaCheck[0] as { total?: number })?.total ?? 0);
+      if (currentTotal + bytes.byteLength > MAX_BOARD_FILES_BYTES) {
+        return Response.json(
+          { ok: false, error: "board_files_quota_exceeded" },
+          { status: 507 },
+        );
+      }
+
+      // Slice into chunks <= 900 KB
+      const chunks: Uint8Array[] = [];
+      for (let offset = 0; offset < bytes.byteLength; offset += FILE_CHUNK_BYTES) {
+        const end = Math.min(offset + FILE_CHUNK_BYTES, bytes.byteLength);
+        chunks.push(bytes.subarray(offset, end));
+      }
+
+      const runInsert = () => {
+        for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
+          const chunkData = chunks[chunkIdx]!;
+          sql.exec(
+            "INSERT INTO files (file_id, chunk_idx, mime, total_bytes, data, created_at, last_referenced_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            fileId,
+            chunkIdx,
+            detectedMime,
+            bytes.byteLength,
+            chunkData,
+            now,
+            now,
+          );
+        }
+      };
+
+      if (typeof this.ctx.storage.transactionSync === "function") {
+        this.ctx.storage.transactionSync(runInsert);
+      } else {
+        runInsert();
+      }
+
+      this.fileLastTouchedInMemory.set(fileId, now);
+      return Response.json({ ok: true, fileId, deduplicated: false }, { status: 200 });
     }
 
     if (url.pathname === "/internal/revoke" && request.method === "POST") {

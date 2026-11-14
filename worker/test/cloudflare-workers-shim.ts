@@ -161,6 +161,18 @@ export class MockSqlStorage {
   public metaTable = new Map<string, string>();
   public snapshotTable = new Map<number, Uint8Array>();
   public snapshotBackupTable = new Map<number, { data: Uint8Array; backedUpAt: number }>();
+  public filesTable = new Map<
+    string,
+    {
+      file_id: string;
+      chunk_idx: number;
+      mime: string;
+      total_bytes: number;
+      data: Uint8Array;
+      created_at: number;
+      last_referenced_at: number;
+    }
+  >();
 
   public cloneState() {
     const snapshotCopy = new Map<number, Uint8Array>();
@@ -171,11 +183,27 @@ export class MockSqlStorage {
     for (const [k, v] of this.snapshotBackupTable.entries()) {
       backupCopy.set(k, { data: new Uint8Array(v.data), backedUpAt: v.backedUpAt });
     }
+    const filesCopy = new Map<
+      string,
+      {
+        file_id: string;
+        chunk_idx: number;
+        mime: string;
+        total_bytes: number;
+        data: Uint8Array;
+        created_at: number;
+        last_referenced_at: number;
+      }
+    >();
+    for (const [k, v] of this.filesTable.entries()) {
+      filesCopy.set(k, { ...v, data: new Uint8Array(v.data) });
+    }
     return {
       tablesCreated: new Set(this.tablesCreated),
       metaTable: new Map(this.metaTable),
       snapshotTable: snapshotCopy,
       snapshotBackupTable: backupCopy,
+      filesTable: filesCopy,
     };
   }
 
@@ -184,6 +212,7 @@ export class MockSqlStorage {
     this.metaTable = snapshot.metaTable;
     this.snapshotTable = snapshot.snapshotTable;
     this.snapshotBackupTable = snapshot.snapshotBackupTable;
+    this.filesTable = snapshot.filesTable;
   }
 
   public exec(query: string, ...bindings: unknown[]) {
@@ -213,6 +242,16 @@ export class MockSqlStorage {
     if (upper.startsWith("CREATE TABLE IF NOT EXISTS SNAPSHOT")) {
       const existed = this.tablesCreated.has("snapshot");
       this.tablesCreated.add("snapshot");
+      return {
+        rowsRead: 0,
+        rowsWritten: existed ? 0 : 1,
+        toArray: () => [],
+      };
+    }
+
+    if (upper.startsWith("CREATE TABLE IF NOT EXISTS FILES")) {
+      const existed = this.tablesCreated.has("files");
+      this.tablesCreated.add("files");
       return {
         rowsRead: 0,
         rowsWritten: existed ? 0 : 1,
@@ -349,6 +388,139 @@ export class MockSqlStorage {
       for (const idx of Array.from(this.snapshotTable.keys())) {
         if (idx >= minIdx) {
           this.snapshotTable.delete(idx);
+          deleted += 1;
+        }
+      }
+      return {
+        rowsRead: 0,
+        rowsWritten: deleted,
+        toArray: () => [],
+      };
+    }
+
+    if (upper.startsWith("SELECT 1 FROM FILES WHERE FILE_ID =")) {
+      const targetId = String(bindings[0] ?? "");
+      let found = false;
+      for (const f of this.filesTable.values()) {
+        if (f.file_id === targetId) {
+          found = true;
+          break;
+        }
+      }
+      return {
+        rowsRead: found ? 1 : 0,
+        rowsWritten: 0,
+        toArray: () => (found ? [{ "1": 1 }] : []),
+      };
+    }
+
+    if (
+      upper.startsWith(
+        "SELECT CHUNK_IDX, MIME, TOTAL_BYTES, DATA FROM FILES WHERE FILE_ID =",
+      )
+    ) {
+      const targetId = String(bindings[0] ?? "");
+      const rows: Array<{
+        chunk_idx: number;
+        mime: string;
+        total_bytes: number;
+        data: Uint8Array;
+      }> = [];
+      for (const f of this.filesTable.values()) {
+        if (f.file_id === targetId) {
+          rows.push({
+            chunk_idx: f.chunk_idx,
+            mime: f.mime,
+            total_bytes: f.total_bytes,
+            data: f.data,
+          });
+        }
+      }
+      rows.sort((a, b) => a.chunk_idx - b.chunk_idx);
+      return {
+        rowsRead: rows.length,
+        rowsWritten: 0,
+        toArray: () => rows,
+      };
+    }
+
+    if (upper.startsWith("SELECT COALESCE(SUM(LENGTH(DATA)), 0)")) {
+      let total = 0;
+      for (const f of this.filesTable.values()) {
+        total += f.data.byteLength;
+      }
+      return {
+        rowsRead: this.filesTable.size,
+        rowsWritten: 0,
+        toArray: () => [{ total }],
+      };
+    }
+
+    if (
+      upper.startsWith("INSERT INTO FILES") ||
+      upper.startsWith("INSERT OR REPLACE INTO FILES")
+    ) {
+      const file_id = String(bindings[0] ?? "");
+      const chunk_idx = Number(bindings[1] ?? 0);
+      const mime = String(bindings[2] ?? "");
+      const total_bytes = Number(bindings[3] ?? 0);
+      const rawData = bindings[4];
+      const data =
+        rawData instanceof Uint8Array
+          ? new Uint8Array(rawData)
+          : rawData instanceof ArrayBuffer
+            ? new Uint8Array(rawData)
+            : new TextEncoder().encode(String(rawData ?? ""));
+      const created_at = Number(bindings[5] ?? Date.now());
+      const last_referenced_at = Number(bindings[6] ?? created_at);
+
+      const key = `${file_id}:${chunk_idx}`;
+      this.filesTable.set(key, {
+        file_id,
+        chunk_idx,
+        mime,
+        total_bytes,
+        data,
+        created_at,
+        last_referenced_at,
+      });
+
+      return {
+        rowsRead: 0,
+        rowsWritten: 1,
+        toArray: () => [],
+      };
+    }
+
+    if (
+      upper.startsWith(
+        "UPDATE FILES SET LAST_REFERENCED_AT = ? WHERE FILE_ID = ?",
+      )
+    ) {
+      const now = Number(bindings[0] ?? Date.now());
+      const targetId = String(bindings[1] ?? "");
+      let updated = 0;
+      for (const f of this.filesTable.values()) {
+        if (f.file_id === targetId) {
+          f.last_referenced_at = now;
+          updated += 1;
+        }
+      }
+      return {
+        rowsRead: 0,
+        rowsWritten: updated,
+        toArray: () => [],
+      };
+    }
+
+    if (
+      upper.startsWith("DELETE FROM FILES WHERE LAST_REFERENCED_AT < ?")
+    ) {
+      const cutoff = Number(bindings[0] ?? 0);
+      let deleted = 0;
+      for (const [k, f] of Array.from(this.filesTable.entries())) {
+        if (f.last_referenced_at < cutoff) {
+          this.filesTable.delete(k);
           deleted += 1;
         }
       }
