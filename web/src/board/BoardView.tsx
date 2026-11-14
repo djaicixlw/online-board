@@ -60,12 +60,18 @@ const wrappedReconcile: ReconcileElementsFn = (localElements, remoteElements, lo
         remote: readonly ExcalidrawElementLike[],
         appState: Record<string, unknown>,
       ) => ExcalidrawElementLike[];
-      return fn(localElements, remoteElements, localAppState);
+      const res = fn(localElements, remoteElements, localAppState);
+      if (
+        Array.isArray(res) &&
+        res.length >= Math.max(localElements.length, remoteElements.length)
+      ) {
+        return res;
+      }
     } catch {
       // Fallback to deterministic version/versionNonce reconciliation
     }
   }
-  return [...remoteElements];
+  return mergeSceneElements(localElements, remoteElements, localAppState);
 };
 
 export default function BoardView({ boardId }: { boardId: string }) {

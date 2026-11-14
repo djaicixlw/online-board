@@ -71,7 +71,13 @@ export function mergeSceneElements(
 
   if (typeof excalidrawReconcile === "function") {
     try {
-      return excalidrawReconcile(localElements, candidateMerged, localAppState);
+      const reconciled = excalidrawReconcile(localElements, remoteElements, localAppState);
+      if (
+        Array.isArray(reconciled) &&
+        reconciled.length >= Math.max(localElements.length, remoteElements.length)
+      ) {
+        return reconciled;
+      }
     } catch {
       return candidateMerged;
     }

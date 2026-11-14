@@ -110,6 +110,8 @@ export class BoardCollabClient {
   private lastSceneSentAt = -Infinity;
   private lastCursorSentAt = -Infinity;
 
+  private pendingSceneElements: readonly ExcalidrawElementLike[] | null = null;
+
   private pendingCursor: {
     x: number;
     y: number;
@@ -345,15 +347,19 @@ export class BoardCollabClient {
     const elapsed = nowMs - this.lastSceneSentAt;
 
     if (elapsed >= SCENE_SYNC_INTERVAL_MS && this.sceneBatchTimer === null) {
+      this.pendingSceneElements = null;
       this.flushSceneChangesNow(currentElements);
       return;
     }
 
+    this.pendingSceneElements = currentElements;
     if (this.sceneBatchTimer === null) {
       const waitMs = Math.max(0, SCENE_SYNC_INTERVAL_MS - elapsed);
       this.sceneBatchTimer = setTimeout(() => {
         this.sceneBatchTimer = null;
-        this.flushSceneChangesNow();
+        const pending = this.pendingSceneElements;
+        this.pendingSceneElements = null;
+        this.flushSceneChangesNow(pending ?? undefined);
       }, waitMs);
     }
   }
@@ -380,11 +386,16 @@ export class BoardCollabClient {
       this.clearSceneBatchTimer();
       this.flushSceneChangesNow(currentElements);
     } else if (this.sceneBatchTimer === null) {
+      this.pendingSceneElements = currentElements;
       const waitMs = Math.max(0, SCENE_SYNC_INTERVAL_MS - elapsed);
       this.sceneBatchTimer = setTimeout(() => {
         this.sceneBatchTimer = null;
-        this.flushSceneChangesNow();
+        const pending = this.pendingSceneElements;
+        this.pendingSceneElements = null;
+        this.flushSceneChangesNow(pending ?? undefined);
       }, waitMs);
+    } else {
+      this.pendingSceneElements = currentElements;
     }
   }
 
@@ -692,6 +703,7 @@ export class BoardCollabClient {
       clearTimeout(this.sceneBatchTimer);
       this.sceneBatchTimer = null;
     }
+    this.pendingSceneElements = null;
   }
 
   private clearCursorThrottleTimer(): void {
