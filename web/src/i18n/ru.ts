@@ -52,6 +52,14 @@ export const RU_STRINGS = {
   boardNotSavedError: "Доска повреждена, изменения не сохраняются. Сообщите преподавателю",
   collaboratorsCountPrefix: "Участников:",
 
+  // Image attachments (T4)
+  imageTooLargeError: "Картинка слишком большая, максимум 4 МБ",
+  imageUploadError: "Не удалось загрузить картинку на сервер. Проверьте подключение к сети.",
+  imageQuotaExceededError:
+    "Превышена квота хранения картинок на доске (максимум 100 МБ). Удалите старые картинки.",
+  imageUnsupportedFormatError:
+    "Неподдерживаемый формат изображения. Разрешены только WebP, PNG и JPEG.",
+
   // Teacher Cabinet (T3)
   teacherCabinetTitle: "Кабинет преподавателя",
   teacherLoginTitle: "Вход для преподавателя",

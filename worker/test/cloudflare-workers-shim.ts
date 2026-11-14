@@ -414,11 +414,7 @@ export class MockSqlStorage {
       };
     }
 
-    if (
-      upper.startsWith(
-        "SELECT CHUNK_IDX, MIME, TOTAL_BYTES, DATA FROM FILES WHERE FILE_ID =",
-      )
-    ) {
+    if (upper.startsWith("SELECT CHUNK_IDX, MIME, TOTAL_BYTES, DATA FROM FILES WHERE FILE_ID =")) {
       const targetId = String(bindings[0] ?? "");
       const rows: Array<{
         chunk_idx: number;
@@ -456,10 +452,7 @@ export class MockSqlStorage {
       };
     }
 
-    if (
-      upper.startsWith("INSERT INTO FILES") ||
-      upper.startsWith("INSERT OR REPLACE INTO FILES")
-    ) {
+    if (upper.startsWith("INSERT INTO FILES") || upper.startsWith("INSERT OR REPLACE INTO FILES")) {
       const file_id = String(bindings[0] ?? "");
       const chunk_idx = Number(bindings[1] ?? 0);
       const mime = String(bindings[2] ?? "");
@@ -492,11 +485,7 @@ export class MockSqlStorage {
       };
     }
 
-    if (
-      upper.startsWith(
-        "UPDATE FILES SET LAST_REFERENCED_AT = ? WHERE FILE_ID = ?",
-      )
-    ) {
+    if (upper.startsWith("UPDATE FILES SET LAST_REFERENCED_AT = ? WHERE FILE_ID = ?")) {
       const now = Number(bindings[0] ?? Date.now());
       const targetId = String(bindings[1] ?? "");
       let updated = 0;
@@ -513,9 +502,7 @@ export class MockSqlStorage {
       };
     }
 
-    if (
-      upper.startsWith("DELETE FROM FILES WHERE LAST_REFERENCED_AT < ?")
-    ) {
+    if (upper.startsWith("DELETE FROM FILES WHERE LAST_REFERENCED_AT < ?")) {
       const cutoff = Number(bindings[0] ?? 0);
       let deleted = 0;
       for (const [k, f] of Array.from(this.filesTable.entries())) {

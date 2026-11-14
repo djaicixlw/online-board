@@ -65,7 +65,9 @@ describe("Task T4: Board Image Files & SQLite Storage", () => {
     const webp = createMockWebP(50);
     expect(detectImageMime(webp)).toBe("image/webp");
 
-    const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]);
+    const jpeg = new Uint8Array([
+      0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
+    ]);
     expect(detectImageMime(jpeg)).toBe("image/jpeg");
 
     // SVG and HTML rejected to prevent XSS
@@ -148,11 +150,14 @@ describe("Task T4: Board Image Files & SQLite Storage", () => {
     const fakeHash = "0123456789012345678901234567890123456789";
 
     // 1. SHA-1 mismatch -> 400
-    const reqMismatch = new Request(`http://localhost:8787/api/boards/${boardId}/files/${fakeHash}`, {
-      method: "PUT",
-      headers: { "Content-Type": "image/png", Origin: "http://localhost:8787" },
-      body: png,
-    });
+    const reqMismatch = new Request(
+      `http://localhost:8787/api/boards/${boardId}/files/${fakeHash}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "image/png", Origin: "http://localhost:8787" },
+        body: png,
+      },
+    );
     const resMismatch = await worker.fetch(reqMismatch, env);
     expect(resMismatch.status).toBe(400);
 
@@ -168,11 +173,14 @@ describe("Task T4: Board Image Files & SQLite Storage", () => {
     expect(resSvg.status).toBe(415);
 
     // 3. Cross-origin upload forbidden -> 403
-    const reqOrigin = new Request(`http://localhost:8787/api/boards/${boardId}/files/${correctHash}`, {
-      method: "PUT",
-      headers: { "Content-Type": "image/png", Origin: "https://evil-attacker.com" },
-      body: png,
-    });
+    const reqOrigin = new Request(
+      `http://localhost:8787/api/boards/${boardId}/files/${correctHash}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "image/png", Origin: "https://evil-attacker.com" },
+        body: png,
+      },
+    );
     const resOrigin = await worker.fetch(reqOrigin, env);
     expect(resOrigin.status).toBe(403);
   });
@@ -252,7 +260,11 @@ describe("Task T4: Board Image Files & SQLite Storage", () => {
     const storage = harness.storages.get(boardId);
     expect(storage).toBeDefined();
     const oldTimestamp = Date.now() - 31 * 24 * 60 * 60 * 1000;
-    storage?.sql.exec("UPDATE files SET last_referenced_at = ? WHERE file_id = ?", oldTimestamp, hashOrphan);
+    storage?.sql.exec(
+      "UPDATE files SET last_referenced_at = ? WHERE file_id = ?",
+      oldTimestamp,
+      hashOrphan,
+    );
 
     // 4. Trigger snapshot flush
     await stub.fetch("http://do/internal/import", {

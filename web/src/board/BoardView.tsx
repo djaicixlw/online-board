@@ -9,14 +9,20 @@ import "@excalidraw/excalidraw/index.css";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BoardCollabClient,
+  compressImageFile,
+  dataUrlToBlob,
   getOrCreateClientId,
+  ImageDownloadManager,
+  isFileUploaded,
   loadSavedNickname,
+  markFileUploaded,
   MAX_EXCALIDRAW_FILE_BYTES,
   mergeSceneElements,
   parseExcalidrawDocument,
   sanitizeNickname,
   saveNickname,
   serializeExcalidrawDocument,
+  uploadBoardFile,
   type CollaboratorInfo,
   type ConnectionStatus,
   type CursorToolKind,
@@ -37,6 +43,13 @@ interface ExcalidrawImperativeAPILike {
   }) => void;
   getSceneElementsIncludingDeleted: () => readonly ExcalidrawElementLike[];
   getAppState: () => Record<string, unknown>;
+  getFiles?: () => Record<
+    string,
+    { id: string; dataURL: string; mimeType: string; created: number }
+  >;
+  addFiles?: (
+    files: Array<{ id: string; dataURL: string; mimeType: string; created: number }>,
+  ) => void;
 }
 
 const wrappedReconcile: ReconcileElementsFn = (localElements, remoteElements, localAppState) => {
@@ -87,6 +100,7 @@ export default function BoardView({ boardId }: { boardId: string }) {
     zoom: { value: 1 },
   });
   const collabClientRef = useRef<BoardCollabClient | null>(null);
+  const downloadManagerRef = useRef<ImageDownloadManager | null>(null);
   const activePointerKindRef = useRef<PointerKind>("mouse");
   const isApplyingRemoteRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -121,16 +135,35 @@ export default function BoardView({ boardId }: { boardId: string }) {
       } finally {
         isApplyingRemoteRef.current = false;
       }
+
+      // T4: Identify remote image elements that are not yet loaded in Excalidraw
+      if (api && typeof api.getFiles === "function") {
+        const existingFiles = api.getFiles() || {};
+        const neededFileIds: string[] = [];
+        for (const el of mergedElements) {
+          if (!el.isDeleted && el.type === "image" && typeof el.fileId === "string" && el.fileId) {
+            if (!existingFiles[el.fileId]) {
+              neededFileIds.push(el.fileId);
+            }
+          }
+        }
+        if (neededFileIds.length > 0) {
+          downloadManagerRef.current?.requestFiles(neededFileIds);
+        }
+      }
     },
     [],
   );
 
-  // Initialize BoardCollabClient once per boardId (without savedNick in deps so setting/changing
-  // nick never disconnects or recreates the WebSocket — fixing Review #1)
+  // Initialize BoardCollabClient and ImageDownloadManager once per boardId
   useEffect(() => {
     if (!boardId) {
       return;
     }
+
+    downloadManagerRef.current = new ImageDownloadManager(boardId, (file) => {
+      excalidrawApiRef.current?.addFiles?.([file]);
+    });
 
     const clientId = getOrCreateClientId();
     const initialNick = initialNickRef.current;
@@ -173,6 +206,7 @@ export default function BoardView({ boardId }: { boardId: string }) {
     }
 
     return () => {
+      downloadManagerRef.current = null;
       client.disconnect();
       collabClientRef.current = null;
     };
@@ -404,6 +438,41 @@ export default function BoardView({ boardId }: { boardId: string }) {
     }
   };
 
+  const handleGenerateIdForFile = useCallback(
+    async (file: File): Promise<string> => {
+      try {
+        const { fileId, mimeType, arrayBuffer, dataUrl } = await compressImageFile(file);
+
+        // Pre-register compressed dataURL in Excalidraw so local preview renders immediately
+        excalidrawApiRef.current?.addFiles?.([
+          {
+            id: fileId,
+            dataURL: dataUrl,
+            mimeType,
+            created: Date.now(),
+          },
+        ]);
+
+        // Background upload with retry
+        uploadBoardFile(boardId, fileId, mimeType, arrayBuffer, () => {
+          setBannerError(RU_STRINGS.imageQuotaExceededError);
+        }).catch(() => {
+          setBannerError(RU_STRINGS.imageUploadError);
+        });
+
+        return fileId;
+      } catch (err: unknown) {
+        if (err instanceof Error && err.message === "image_too_large") {
+          setBannerError(RU_STRINGS.imageTooLargeError);
+        } else {
+          setBannerError(RU_STRINGS.imageUploadError);
+        }
+        throw err;
+      }
+    },
+    [boardId],
+  );
+
   const statusText =
     connectionStatus === "connecting"
       ? RU_STRINGS.statusConnecting
@@ -548,6 +617,7 @@ export default function BoardView({ boardId }: { boardId: string }) {
       >
         <Excalidraw
           langCode={RU_LOCALE_CODE}
+          generateIdForFile={handleGenerateIdForFile}
           excalidrawAPI={(api: unknown) => {
             excalidrawApiRef.current = api as ExcalidrawImperativeAPILike;
           }}
@@ -569,13 +639,42 @@ export default function BoardView({ boardId }: { boardId: string }) {
               toggleTheme: true,
             },
           }}
-          onChange={(elements, currentAppState) => {
+          onChange={(elements, currentAppState, files) => {
             const typedElements = elements as unknown as readonly ExcalidrawElementLike[];
             latestElementsRef.current = typedElements;
             latestAppStateRef.current = currentAppState as unknown as Record<string, unknown>;
             setSceneElementCount(typedElements.filter((el) => el.isDeleted !== true).length);
             if (!isApplyingRemoteRef.current) {
               collabClientRef.current?.queueSceneUpdate(typedElements);
+            }
+
+            // T4: Upload any newly added files (e.g. from paste or drop)
+            if (files) {
+              for (const [fId, fileObj] of Object.entries(files)) {
+                if (
+                  /^[0-9a-f]{40}$/.test(fId) &&
+                  !isFileUploaded(fId) &&
+                  fileObj &&
+                  typeof fileObj.dataURL === "string"
+                ) {
+                  markFileUploaded(fId);
+                  try {
+                    const blob = dataUrlToBlob(fileObj.dataURL);
+                    blob
+                      .arrayBuffer()
+                      .then((buf) => {
+                        uploadBoardFile(boardId, fId, fileObj.mimeType || "image/webp", buf, () => {
+                          setBannerError(RU_STRINGS.imageQuotaExceededError);
+                        }).catch(() => {
+                          setBannerError(RU_STRINGS.imageUploadError);
+                        });
+                      })
+                      .catch(() => {});
+                  } catch {
+                    // ignore malformed data url
+                  }
+                }
+              }
             }
           }}
           onPointerUpdate={(payload: {

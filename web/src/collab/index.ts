@@ -23,6 +23,21 @@ export {
   type ExcalidrawFileDocument,
 } from "./excalidraw-file.js";
 export {
+  blobToDataUrl,
+  clearUploadedFilesForTesting,
+  compressImageFile,
+  computeSha1Hex,
+  dataUrlToBlob,
+  ImageDownloadManager,
+  isFileUploaded,
+  MAX_FILE_BYTES as MAX_IMAGE_FILE_BYTES,
+  MAX_IMAGE_DIMENSION,
+  markFileUploaded,
+  uploadBoardFile,
+  type CompressedImageResult,
+  type LoadedImageFile,
+} from "./files.js";
+export {
   CLIENT_ID_STORAGE_KEY,
   generateBoardId,
   getOrCreateClientId,

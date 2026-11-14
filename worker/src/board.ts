@@ -1091,7 +1091,10 @@ export class Board extends DurableObject<Env> {
     // T4: Internal file endpoints for storing and serving images
     const matchGetFile = /^\/internal\/files\/([0-9a-f]{40})$/.exec(url.pathname);
     if (matchGetFile && request.method === "GET") {
-      const fileId = matchGetFile[1]!;
+      const fileId = matchGetFile[1];
+      if (!fileId) {
+        return Response.json({ ok: false, error: "Invalid fileId" }, { status: 400 });
+      }
       const sql = this.ctx.storage?.sql;
       if (!sql) {
         return Response.json({ ok: false, error: "Storage not available" }, { status: 500 });
@@ -1114,7 +1117,10 @@ export class Board extends DurableObject<Env> {
         return Response.json({ ok: false, error: "File not found" }, { status: 404 });
       }
 
-      const firstRow = rows[0]!;
+      const firstRow = rows[0];
+      if (!firstRow) {
+        return Response.json({ ok: false, error: "File not found" }, { status: 404 });
+      }
       const mime = firstRow.mime;
       const totalBytes = firstRow.total_bytes;
       const combined = new Uint8Array(totalBytes);
@@ -1138,7 +1144,10 @@ export class Board extends DurableObject<Env> {
 
     const matchPutFile = /^\/internal\/files\/([0-9a-f]{40})$/.exec(url.pathname);
     if (matchPutFile && request.method === "PUT") {
-      const fileId = matchPutFile[1]!;
+      const fileId = matchPutFile[1];
+      if (!fileId) {
+        return Response.json({ ok: false, error: "Invalid fileId" }, { status: 400 });
+      }
       const sql = this.ctx.storage?.sql;
       if (!sql) {
         return Response.json({ ok: false, error: "Storage not available" }, { status: 500 });
@@ -1147,10 +1156,7 @@ export class Board extends DurableObject<Env> {
 
       const bodyBuf = await request.arrayBuffer();
       if (bodyBuf.byteLength > MAX_FILE_BYTES) {
-        return Response.json(
-          { ok: false, error: "Payload Too Large: max 4 MiB" },
-          { status: 413 },
-        );
+        return Response.json({ ok: false, error: "Payload Too Large: max 4 MiB" }, { status: 413 });
       }
       if (bodyBuf.byteLength === 0) {
         return Response.json({ ok: false, error: "Empty file body" }, { status: 400 });
@@ -1197,10 +1203,7 @@ export class Board extends DurableObject<Env> {
         .toArray();
       const currentTotal = Number((quotaCheck[0] as { total?: number })?.total ?? 0);
       if (currentTotal + bytes.byteLength > MAX_BOARD_FILES_BYTES) {
-        return Response.json(
-          { ok: false, error: "board_files_quota_exceeded" },
-          { status: 507 },
-        );
+        return Response.json({ ok: false, error: "board_files_quota_exceeded" }, { status: 507 });
       }
 
       // Slice into chunks <= 900 KB
@@ -1212,7 +1215,10 @@ export class Board extends DurableObject<Env> {
 
       const runInsert = () => {
         for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
-          const chunkData = chunks[chunkIdx]!;
+          const chunkData = chunks[chunkIdx];
+          if (!chunkData) {
+            continue;
+          }
           sql.exec(
             "INSERT INTO files (file_id, chunk_idx, mime, total_bytes, data, created_at, last_referenced_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             fileId,

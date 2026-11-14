@@ -183,8 +183,14 @@ async function handleApiRequest(
   // T4: Image files storage and retrieval (/api/boards/:id/files/:fileId)
   const fileMatch = /^\/api\/boards\/([^/]+)\/files\/([0-9a-f]{40})$/.exec(url.pathname);
   if (fileMatch) {
-    const boardId = fileMatch[1]!;
-    const fileId = fileMatch[2]!;
+    const boardId = fileMatch[1];
+    const fileId = fileMatch[2];
+    if (!boardId || !fileId) {
+      return addSecurityHeaders(
+        Response.json({ ok: false, error: "Board not found" }, { status: 404 }),
+        true,
+      );
+    }
 
     if (!isValidBoardId(boardId)) {
       return addSecurityHeaders(
@@ -252,10 +258,7 @@ async function handleApiRequest(
 
           if (!isDevLocalhost && originHost !== requestHost) {
             return addSecurityHeaders(
-              Response.json(
-                { ok: false, error: "Cross-origin upload forbidden" },
-                { status: 403 },
-              ),
+              Response.json({ ok: false, error: "Cross-origin upload forbidden" }, { status: 403 }),
               true,
             );
           }
@@ -277,8 +280,7 @@ async function handleApiRequest(
           Response.json(
             {
               ok: false,
-              error:
-                "Unsupported Media Type: expected image/webp, image/jpeg, or image/png",
+              error: "Unsupported Media Type: expected image/webp, image/jpeg, or image/png",
             },
             { status: 415 },
           ),
