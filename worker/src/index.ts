@@ -2,6 +2,7 @@ import pkg from "../package.json";
 import { Board, isValidBoardId, sanitizeNickname } from "./board.js";
 import { authenticateTeacher, evictBoardCache, generateId, isBoardAllowed } from "./d1.js";
 import type { Env } from "./env.js";
+import { getBoardGitHubCommits, getBoardGitHubContentAtRef } from "./github.js";
 
 export { Board };
 export type { Env };
@@ -338,7 +339,8 @@ async function handleApiRequest(
     url.pathname === "/api/students" ||
     url.pathname.startsWith("/api/students/") ||
     url.pathname === "/api/boards" ||
-    url.pathname.startsWith("/api/boards/");
+    url.pathname.startsWith("/api/boards/") ||
+    url.pathname === "/api/backups";
 
   if (!isKnownCabinetEndpoint) {
     return addSecurityHeaders(
@@ -552,7 +554,7 @@ async function handleApiRequest(
       const studentId = url.searchParams.get("student_id");
       if (studentId) {
         const rows = await env.DB.prepare(
-          "SELECT id, teacher_id, student_id, title, notes, created_at, updated_at FROM boards WHERE teacher_id = ?1 AND student_id = ?2 AND deleted_at IS NULL ORDER BY updated_at DESC",
+          "SELECT id, teacher_id, student_id, title, notes, created_at, updated_at, last_backup_at FROM boards WHERE teacher_id = ?1 AND student_id = ?2 AND deleted_at IS NULL ORDER BY updated_at DESC",
         )
           .bind(teacher.id, studentId)
           .all();
@@ -560,7 +562,7 @@ async function handleApiRequest(
       }
 
       const rows = await env.DB.prepare(
-        "SELECT id, teacher_id, student_id, title, notes, created_at, updated_at FROM boards WHERE teacher_id = ?1 AND deleted_at IS NULL ORDER BY updated_at DESC",
+        "SELECT id, teacher_id, student_id, title, notes, created_at, updated_at, last_backup_at FROM boards WHERE teacher_id = ?1 AND deleted_at IS NULL ORDER BY updated_at DESC",
       )
         .bind(teacher.id)
         .all();
@@ -799,6 +801,283 @@ async function handleApiRequest(
 
     return addSecurityHeaders(
       Response.json({ ok: false, error: "Method Not Allowed" }, { status: 405 }),
+      true,
+    );
+  }
+
+  // T5: /api/boards/:id/backups or /api/backups?board_id=:id (GET)
+  const backupsMatch = /^\/api\/boards\/([^/]+)\/backups$/.exec(url.pathname);
+  if (backupsMatch || url.pathname === "/api/backups") {
+    if (request.method !== "GET") {
+      return addSecurityHeaders(
+        Response.json({ ok: false, error: "Method Not Allowed" }, { status: 405 }),
+        true,
+      );
+    }
+    const boardId = backupsMatch ? backupsMatch[1] : url.searchParams.get("board_id");
+    if (!boardId || !isValidBoardId(boardId)) {
+      return addSecurityHeaders(
+        Response.json({ ok: false, error: "Board not found" }, { status: 404 }),
+        true,
+      );
+    }
+
+    const boardRecord = await env.DB.prepare(
+      "SELECT id, teacher_id, last_backup_at FROM boards WHERE id = ?1 AND teacher_id = ?2 AND deleted_at IS NULL",
+    )
+      .bind(boardId, teacher.id)
+      .first<{ id: string; teacher_id: string; last_backup_at: number | null }>();
+
+    if (!boardRecord) {
+      return addSecurityHeaders(
+        Response.json({ ok: false, error: "Board not found" }, { status: 404 }),
+        true,
+      );
+    }
+
+    // Query DO for local backup info
+    const stub = env.BOARD.get(env.BOARD.idFromName(boardId));
+    let localBackup: {
+      source: "local_backup";
+      backed_up_at: number;
+      element_count: number;
+    } | null = null;
+    try {
+      const doRes = await stub.fetch("http://do/internal/backup-info");
+      if (doRes.ok) {
+        const doData = (await doRes.json()) as {
+          ok: boolean;
+          has_backup: boolean;
+          backed_up_at?: number;
+          element_count?: number;
+        };
+        if (doData.ok && doData.has_backup) {
+          localBackup = {
+            source: "local_backup",
+            backed_up_at: doData.backed_up_at ?? 0,
+            element_count: doData.element_count ?? 0,
+          };
+        }
+      }
+    } catch (err) {
+      console.error("[index] Error fetching local backup info from DO:", err);
+    }
+
+    // Query GitHub Commits API if configured
+    let gitBackups: Array<{ sha: string; message: string; date: string; author: string }> = [];
+    if (env.GITHUB_BACKUP_TOKEN && env.GITHUB_BACKUP_REPO) {
+      gitBackups = await getBoardGitHubCommits({
+        token: env.GITHUB_BACKUP_TOKEN,
+        repo: env.GITHUB_BACKUP_REPO,
+        boardId,
+        teacherId: teacher.id,
+      });
+    }
+
+    return addSecurityHeaders(
+      Response.json({
+        ok: true,
+        local_backup: localBackup,
+        git_backups: gitBackups,
+        last_backup_at: boardRecord.last_backup_at,
+      }),
+      true,
+    );
+  }
+
+  // T5: /api/boards/:id/restore (POST)
+  const restoreMatch = /^\/api\/boards\/([^/]+)\/restore$/.exec(url.pathname);
+  if (restoreMatch) {
+    if (request.method !== "POST") {
+      return addSecurityHeaders(
+        Response.json({ ok: false, error: "Method Not Allowed" }, { status: 405 }),
+        true,
+      );
+    }
+    const boardId = restoreMatch[1];
+    if (!boardId || !isValidBoardId(boardId)) {
+      return addSecurityHeaders(
+        Response.json({ ok: false, error: "Board not found" }, { status: 404 }),
+        true,
+      );
+    }
+
+    const boardRecord = await env.DB.prepare(
+      "SELECT id, teacher_id FROM boards WHERE id = ?1 AND teacher_id = ?2 AND deleted_at IS NULL",
+    )
+      .bind(boardId, teacher.id)
+      .first<{ id: string; teacher_id: string }>();
+
+    if (!boardRecord) {
+      return addSecurityHeaders(
+        Response.json({ ok: false, error: "Board not found" }, { status: 404 }),
+        true,
+      );
+    }
+
+    interface ApiRestoreBody {
+      source?: string;
+      ref?: string;
+      elements?: unknown[];
+      files?: unknown;
+    }
+
+    let body: ApiRestoreBody | null = null;
+    try {
+      body = (await request.json()) as ApiRestoreBody;
+    } catch {
+      return addSecurityHeaders(
+        Response.json({ ok: false, error: "Invalid JSON body" }, { status: 400 }),
+        true,
+      );
+    }
+
+    if (!body || !body.source) {
+      return addSecurityHeaders(
+        Response.json({ ok: false, error: "Missing restore source" }, { status: 400 }),
+        true,
+      );
+    }
+
+    const stub = env.BOARD.get(env.BOARD.idFromName(boardId));
+
+    if (body.source === "local_backup") {
+      const doRes = await stub.fetch("http://do/internal/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: "local_backup" }),
+      });
+      const doData = (await doRes.json()) as {
+        ok: boolean;
+        error?: string;
+        elementsCount?: number;
+      };
+      if (!doRes.ok || !doData.ok) {
+        return addSecurityHeaders(
+          Response.json({ ok: false, error: doData.error || "Restore failed" }, { status: 400 }),
+          true,
+        );
+      }
+
+      const now = Date.now();
+      await env.DB.prepare("UPDATE boards SET updated_at = ?1 WHERE id = ?2")
+        .bind(now, boardId)
+        .run();
+
+      return addSecurityHeaders(
+        Response.json({ ok: true, restored: true, elements_count: doData.elementsCount }),
+        true,
+      );
+    }
+
+    if (body.source === "git") {
+      if (!body.ref || typeof body.ref !== "string") {
+        return addSecurityHeaders(
+          Response.json({ ok: false, error: "Missing git commit ref" }, { status: 400 }),
+          true,
+        );
+      }
+      if (!env.GITHUB_BACKUP_TOKEN || !env.GITHUB_BACKUP_REPO) {
+        return addSecurityHeaders(
+          Response.json({ ok: false, error: "GitHub backup is not configured" }, { status: 400 }),
+          true,
+        );
+      }
+
+      const gitContent = await getBoardGitHubContentAtRef({
+        token: env.GITHUB_BACKUP_TOKEN,
+        repo: env.GITHUB_BACKUP_REPO,
+        boardId,
+        teacherId: teacher.id,
+        ref: body.ref,
+      });
+
+      if (!gitContent.ok || !gitContent.elements) {
+        return addSecurityHeaders(
+          Response.json(
+            { ok: false, error: gitContent.error || "Failed to retrieve Git content" },
+            { status: 400 },
+          ),
+          true,
+        );
+      }
+
+      const doRes = await stub.fetch("http://do/internal/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source: "payload",
+          elements: gitContent.elements,
+        }),
+      });
+      const doData = (await doRes.json()) as {
+        ok: boolean;
+        error?: string;
+        elementsCount?: number;
+      };
+      if (!doRes.ok || !doData.ok) {
+        return addSecurityHeaders(
+          Response.json({ ok: false, error: doData.error || "Restore failed" }, { status: 400 }),
+          true,
+        );
+      }
+
+      const now = Date.now();
+      await env.DB.prepare("UPDATE boards SET updated_at = ?1 WHERE id = ?2")
+        .bind(now, boardId)
+        .run();
+
+      return addSecurityHeaders(
+        Response.json({ ok: true, restored: true, elements_count: doData.elementsCount }),
+        true,
+      );
+    }
+
+    if (body.source === "file") {
+      if (!Array.isArray(body.elements)) {
+        return addSecurityHeaders(
+          Response.json(
+            { ok: false, error: "Invalid elements array in file payload" },
+            { status: 400 },
+          ),
+          true,
+        );
+      }
+
+      const doRes = await stub.fetch("http://do/internal/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source: "payload",
+          elements: body.elements,
+          files: body.files,
+        }),
+      });
+      const doData = (await doRes.json()) as {
+        ok: boolean;
+        error?: string;
+        elementsCount?: number;
+      };
+      if (!doRes.ok || !doData.ok) {
+        return addSecurityHeaders(
+          Response.json({ ok: false, error: doData.error || "Restore failed" }, { status: 400 }),
+          true,
+        );
+      }
+
+      const now = Date.now();
+      await env.DB.prepare("UPDATE boards SET updated_at = ?1 WHERE id = ?2")
+        .bind(now, boardId)
+        .run();
+
+      return addSecurityHeaders(
+        Response.json({ ok: true, restored: true, elements_count: doData.elementsCount }),
+        true,
+      );
+    }
+
+    return addSecurityHeaders(
+      Response.json({ ok: false, error: "Unsupported restore source" }, { status: 400 }),
       true,
     );
   }

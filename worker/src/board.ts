@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env.js";
+import { exportBoardToGitHub } from "./github.js";
 
 /**
  * Default snapshot persistence interval (5000 ms).
@@ -10,6 +11,11 @@ export const DEFAULT_SAVE_INTERVAL_MS = 5_000;
 export const MIN_PROD_SAVE_INTERVAL_MS = 2_000;
 export const MAX_PROD_SAVE_INTERVAL_MS = 8_000;
 export const MIN_DEV_SAVE_INTERVAL_MS = 50;
+
+/**
+ * Default quiet window (10 minutes = 600,000 ms) before triggering automatic GitHub backup.
+ */
+export const DEFAULT_BACKUP_QUIET_MS = 10 * 60 * 1000;
 
 export const MAX_PILOT_BOARD_IDS = 50;
 export const MAX_MESSAGE_BYTES = 2 * 1024 * 1024; // 2 MiB per WebSocket message
@@ -425,6 +431,12 @@ export class Board extends DurableObject<Env> {
   private totalElementsBytes = 0;
   private readonly sessions = new Map<WebSocket, SessionRuntimeState>();
 
+  private readonly backupQuietMs: number;
+  private backupPendingAt: number | null = null;
+  private lastBackupAt: number | null = null;
+  private lastLocalBackupAt: number | null = null;
+  private readonly gitUploadedAssets = new Set<string>();
+
   private schemaInitialized = false;
   private filesTableInitialized = false;
   private readonly fileLastTouchedInMemory = new Map<string, number>();
@@ -448,6 +460,10 @@ export class Board extends DurableObject<Env> {
     this.saveIntervalMs = resolveSaveIntervalMs(env.SAVE_INTERVAL_MS, isDev);
     this.maxBoardElements = resolvePositiveLimit(env.MAX_BOARD_ELEMENTS, MAX_BOARD_ELEMENTS);
     this.maxSnapshotBytes = resolvePositiveLimit(env.MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_BYTES);
+
+    const quietEnv = parseInt(env.BACKUP_QUIET_MS || "", 10);
+    this.backupQuietMs =
+      Number.isFinite(quietEnv) && quietEnv > 0 ? quietEnv : DEFAULT_BACKUP_QUIET_MS;
 
     // Configure automatic edge ping/pong response so pings do not wake hibernating Durable Objects
     if (
@@ -653,6 +669,36 @@ export class Board extends DurableObject<Env> {
     }
   }
 
+  private ensureBackupTable(sql: SqlStorage): void {
+    sql.exec(
+      "CREATE TABLE IF NOT EXISTS snapshot_backup (" +
+        "chunk_idx INTEGER PRIMARY KEY, " +
+        "data BLOB NOT NULL, " +
+        "backed_up_at INTEGER NOT NULL" +
+        ");",
+    );
+  }
+
+  private ensureMetaTable(sql: SqlStorage): void {
+    sql.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  }
+
+  private saveMetaKey(key: string, value: string): void {
+    const sql = this.ctx.storage?.sql;
+    if (sql) {
+      try {
+        this.ensureMetaTable(sql);
+        if (value === "") {
+          sql.exec("DELETE FROM meta WHERE key = ?", key);
+        } else {
+          sql.exec("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", key, value);
+        }
+      } catch (err) {
+        console.error("[board] Error saving meta key:", key, err);
+      }
+    }
+  }
+
   private ensureFilesTable(sql: SqlStorage): void {
     if (!this.filesTableInitialized) {
       sql.exec(
@@ -677,13 +723,36 @@ export class Board extends DurableObject<Env> {
       return;
     }
 
+    try {
+      this.ensureBackupTable(sql);
+    } catch {
+      // Ignore if backup table creation fails
+    }
+
     const metaCheck = sql
       .exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")
       .toArray();
     if (metaCheck.length > 0) {
-      const revokedRows = sql.exec("SELECT value FROM meta WHERE key = 'revoked'").toArray();
-      if (revokedRows.length > 0 && (revokedRows[0] as { value?: string })?.value === "1") {
-        this.isRevoked = true;
+      const metaRows = sql.exec("SELECT key, value FROM meta").toArray() as Array<{
+        key: string;
+        value: string;
+      }>;
+      for (const row of metaRows) {
+        if (row.key === "revoked" && row.value === "1") {
+          this.isRevoked = true;
+        } else if (row.key === "backup_pending_at") {
+          const ts = parseInt(row.value, 10);
+          this.backupPendingAt = Number.isFinite(ts) && ts > 0 ? ts : null;
+        } else if (row.key === "last_backup_at") {
+          const ts = parseInt(row.value, 10);
+          this.lastBackupAt = Number.isFinite(ts) && ts > 0 ? ts : null;
+        } else if (row.key === "last_local_backup_at") {
+          const ts = parseInt(row.value, 10);
+          this.lastLocalBackupAt = Number.isFinite(ts) && ts > 0 ? ts : null;
+        } else if (row.key.startsWith("git_asset_")) {
+          const fId = row.key.slice("git_asset_".length);
+          this.gitUploadedAssets.add(fId);
+        }
       }
     }
 
@@ -851,7 +920,30 @@ export class Board extends DurableObject<Env> {
 
       if (!stagedSchemaInitialized) {
         sql.exec("CREATE TABLE IF NOT EXISTS snapshot (chunk_idx INTEGER PRIMARY KEY, data BLOB)");
+        this.ensureBackupTable(sql);
         stagedSchemaInitialized = true;
+      }
+
+      // T5 Part A: Copy previous snapshot to snapshot_backup if >= backupQuietMs passed and board has active elements
+      if (
+        this.lastPersistedChunksCount > 0 &&
+        nowMs - (this.lastLocalBackupAt ?? 0) >= this.backupQuietMs
+      ) {
+        const hasActiveElements = Array.from(this.elements.values()).some((e) => !e.isDeleted);
+        if (hasActiveElements) {
+          try {
+            this.ensureBackupTable(sql);
+            sql.exec("DELETE FROM snapshot_backup");
+            sql.exec(
+              "INSERT INTO snapshot_backup (chunk_idx, data, backed_up_at) SELECT chunk_idx, data, ?1 FROM snapshot",
+              nowMs,
+            );
+            this.lastLocalBackupAt = nowMs;
+            this.saveMetaKey("last_local_backup_at", String(nowMs));
+          } catch (err) {
+            console.error("[board] Error copying to snapshot_backup on flush:", err);
+          }
+        }
       }
 
       for (let idx = 0; idx < chunks.length; idx++) {
@@ -957,13 +1049,14 @@ export class Board extends DurableObject<Env> {
   }
 
   private async scheduleFlushAlarmIfNeeded(nowMs: number): Promise<void> {
-    if (this.alarmScheduled) {
-      return;
-    }
     const earliestNextFlush =
       this.lastFlushAt > 0
         ? Math.max(nowMs + this.saveIntervalMs, this.lastFlushAt + this.saveIntervalMs)
         : nowMs + this.saveIntervalMs;
+    const currentAlarm = await this.ctx.storage.getAlarm();
+    if (this.alarmScheduled && currentAlarm !== null && currentAlarm <= earliestNextFlush) {
+      return;
+    }
     this.alarmScheduled = true;
     await this.ctx.storage.setAlarm(earliestNextFlush);
   }
@@ -1084,8 +1177,215 @@ export class Board extends DurableObject<Env> {
       }
 
       this.dirty = true;
-      await this.flushSnapshot("manual");
+      this.flushSnapshot("manual");
       return Response.json({ ok: true, elementsCount: this.elements.size });
+    }
+
+    // T5: Internal backup info endpoint
+    if (url.pathname === "/internal/backup-info" && request.method === "GET") {
+      const sql = this.ctx.storage?.sql;
+      if (!sql) {
+        return Response.json({ ok: false, error: "Storage not available" }, { status: 500 });
+      }
+      this.ensureBackupTable(sql);
+      const rows = sql
+        .exec("SELECT chunk_idx, data, backed_up_at FROM snapshot_backup ORDER BY chunk_idx ASC")
+        .toArray() as Array<{
+        chunk_idx: number;
+        data: unknown;
+        backed_up_at: number;
+      }>;
+      if (rows.length === 0) {
+        return Response.json({ ok: true, has_backup: false });
+      }
+
+      const backedUpAt = rows[0]?.backed_up_at ?? 0;
+      let elementCount = 0;
+      try {
+        const byteChunks = rows.map((r) => toUint8Array(r.data));
+        const totalLength = byteChunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+        const combined = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of byteChunks) {
+          combined.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        const parsed = JSON.parse(textDecoder.decode(combined)) as { elements?: unknown[] };
+        if (Array.isArray(parsed.elements)) {
+          elementCount = parsed.elements.filter(
+            (el: unknown) => !(el as { isDeleted?: boolean })?.isDeleted,
+          ).length;
+        }
+      } catch {
+        // Fallback count
+      }
+
+      return Response.json({
+        ok: true,
+        has_backup: true,
+        backed_up_at: backedUpAt,
+        element_count: elementCount,
+      });
+    }
+
+    // T5: Internal restore endpoint (restores from local_backup or payload, copies current state to snapshot_backup first)
+    if (url.pathname === "/internal/restore" && request.method === "POST") {
+      const sql = this.ctx.storage?.sql;
+      if (!sql) {
+        return Response.json({ ok: false, error: "Storage not available" }, { status: 500 });
+      }
+
+      interface InternalRestoreBody {
+        source?: string;
+        elements?: ExcalidrawElementRecord[];
+        files?: Array<{
+          file_id: string;
+          chunk_idx: number;
+          mime: string;
+          total_bytes: number;
+          data: string;
+        }>;
+      }
+
+      let body: InternalRestoreBody | null = null;
+      try {
+        body = (await request.json()) as InternalRestoreBody;
+      } catch {
+        return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
+      }
+
+      if (!body || !body.source) {
+        return Response.json({ ok: false, error: "Missing source" }, { status: 400 });
+      }
+
+      const now = Date.now();
+
+      // ALWAYS backup current snapshot to snapshot_backup before applying restore
+      this.ensureBackupTable(sql);
+      try {
+        const runBackupTx = () => {
+          sql.exec("DELETE FROM snapshot_backup;");
+          sql.exec(
+            "INSERT INTO snapshot_backup (chunk_idx, data, backed_up_at) SELECT chunk_idx, data, ?1 FROM snapshot;",
+            now,
+          );
+        };
+        if (typeof this.ctx.storage.transactionSync === "function") {
+          this.ctx.storage.transactionSync(runBackupTx);
+        } else {
+          runBackupTx();
+        }
+        this.lastLocalBackupAt = now;
+        this.saveMetaKey("last_local_backup_at", String(now));
+      } catch (err) {
+        console.error("[board] Error backing up snapshot before restore:", err);
+      }
+
+      let restoringElements: ExcalidrawElementRecord[] = [];
+
+      if (body.source === "local_backup") {
+        const backupRows = sql
+          .exec("SELECT chunk_idx, data FROM snapshot_backup ORDER BY chunk_idx ASC")
+          .toArray() as Array<{ chunk_idx: number; data: unknown }>;
+        if (backupRows.length === 0) {
+          return Response.json({ ok: false, error: "No local backup available" }, { status: 404 });
+        }
+        try {
+          const byteChunks = backupRows.map((r) => toUint8Array(r.data));
+          const totalLength = byteChunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+          const combined = new Uint8Array(totalLength);
+          let offset = 0;
+          for (const chunk of byteChunks) {
+            combined.set(chunk, offset);
+            offset += chunk.byteLength;
+          }
+          const parsed = JSON.parse(textDecoder.decode(combined)) as { elements?: unknown[] };
+          if (Array.isArray(parsed.elements)) {
+            restoringElements = parsed.elements as ExcalidrawElementRecord[];
+          }
+        } catch (err) {
+          return Response.json(
+            { ok: false, error: `Failed to parse local backup: ${String(err)}` },
+            { status: 500 },
+          );
+        }
+      } else if (body.source === "payload") {
+        if (!Array.isArray(body.elements)) {
+          return Response.json({ ok: false, error: "Invalid elements payload" }, { status: 400 });
+        }
+        restoringElements = body.elements;
+      } else {
+        return Response.json({ ok: false, error: "Unsupported source" }, { status: 400 });
+      }
+
+      // Bump versions of all restored elements above current maximum version on the board
+      let currentMaxVersion = 0;
+      for (const el of this.elements.values()) {
+        if (typeof el.version === "number" && el.version > currentMaxVersion) {
+          currentMaxVersion = el.version;
+        }
+      }
+
+      this.elements.clear();
+      this.elementByteLengths.clear();
+      this.totalElementsBytes = 0;
+
+      for (const item of restoringElements) {
+        if (isValidExcalidrawElement(item)) {
+          const bumpedEl: ExcalidrawElementRecord = {
+            ...item,
+            version: Math.max(currentMaxVersion + 1, (item.version || 0) + 1),
+            versionNonce: Math.floor(Math.random() * 2147483647),
+            updated: now,
+          };
+          this.setElementInMemory(bumpedEl);
+        }
+      }
+
+      // Import associated files if provided
+      if (Array.isArray(body.files) && body.files.length > 0) {
+        this.ensureFilesTable(sql);
+        for (const f of body.files) {
+          try {
+            const buf = base64ToUint8Array(f.data);
+            sql.exec(
+              "INSERT OR REPLACE INTO files (file_id, chunk_idx, mime, total_bytes, data, created_at, last_referenced_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+              f.file_id,
+              f.chunk_idx,
+              f.mime,
+              f.total_bytes,
+              buf,
+              now,
+              now,
+            );
+          } catch (err) {
+            console.error("[board] Error importing file chunk on restore:", err);
+          }
+        }
+      }
+
+      this.dirty = true;
+      this.flushSnapshot("manual", now);
+
+      // Broadcast snapshot to all active connected sessions
+      const activeElements = Array.from(this.elements.values());
+      const snapshotPayload = JSON.stringify({
+        type: "snapshot",
+        elements: activeElements,
+      });
+      for (const ws of this.sessions.keys()) {
+        try {
+          ws.send(snapshotPayload);
+        } catch {
+          // Ignore closed sockets
+        }
+      }
+
+      return Response.json({
+        ok: true,
+        restored: true,
+        elementsCount: this.elements.size,
+      });
     }
 
     // T4: Internal file endpoints for storing and serving images
@@ -1628,6 +1928,7 @@ export class Board extends DurableObject<Env> {
         this.writeAttachment(ws, session);
 
         this.dirty = true;
+        this.backupPendingAt = nowMs;
         await this.scheduleFlushAlarmIfNeeded(nowMs);
 
         const broadcastPayload = JSON.stringify({
@@ -1791,12 +2092,176 @@ export class Board extends DurableObject<Env> {
     }
   }
 
+  public async performQuietWindowBackup(effectiveNow: number): Promise<void> {
+    const sql = this.ctx.storage?.sql;
+    if (sql) {
+      try {
+        this.ensureBackupTable(sql);
+        const hasActiveElements = Array.from(this.elements.values()).some((e) => !e.isDeleted);
+        if (hasActiveElements) {
+          const runBackupTx = () => {
+            sql.exec("DELETE FROM snapshot_backup;");
+            sql.exec(
+              "INSERT INTO snapshot_backup (chunk_idx, data, backed_up_at) SELECT chunk_idx, data, ?1 FROM snapshot;",
+              effectiveNow,
+            );
+          };
+          if (typeof this.ctx.storage.transactionSync === "function") {
+            this.ctx.storage.transactionSync(runBackupTx);
+          } else {
+            runBackupTx();
+          }
+          this.lastLocalBackupAt = effectiveNow;
+          this.saveMetaKey("last_local_backup_at", String(effectiveNow));
+        }
+      } catch (err) {
+        console.error("[board] Error backing up to snapshot_backup during quiet window:", err);
+      }
+    }
+
+    const token = this.env.GITHUB_BACKUP_TOKEN;
+    const repo = this.env.GITHUB_BACKUP_REPO;
+    if (token && repo) {
+      let teacherId: string | null = null;
+      if (this.env.DB) {
+        try {
+          const row = await this.env.DB.prepare(
+            "SELECT teacher_id FROM boards WHERE id = ?1 LIMIT 1",
+          )
+            .bind(this.boardId)
+            .first<{ teacher_id: string }>();
+          if (row && row.teacher_id) {
+            teacherId = row.teacher_id;
+          }
+        } catch (err) {
+          console.error("[board] Error fetching teacher_id for backup:", err);
+        }
+      }
+
+      const activeElements = Array.from(this.elements.values()).filter((e) => !e.isDeleted);
+      const activeFileIds = new Set<string>();
+      for (const el of activeElements) {
+        if (el.type === "image" && typeof el.fileId === "string" && el.fileId) {
+          activeFileIds.add(el.fileId);
+        }
+      }
+
+      const filesToUpload: Array<{ fileId: string; mime: string; data: Uint8Array }> = [];
+      if (sql && activeFileIds.size > 0) {
+        this.ensureFilesTable(sql);
+        for (const fId of activeFileIds) {
+          if (!this.gitUploadedAssets.has(fId)) {
+            try {
+              const rows = sql
+                .exec(
+                  "SELECT chunk_idx, mime, total_bytes, data FROM files WHERE file_id = ? ORDER BY chunk_idx ASC",
+                  fId,
+                )
+                .toArray() as Array<{
+                chunk_idx: number;
+                mime: string;
+                total_bytes: number;
+                data: unknown;
+              }>;
+              if (rows.length > 0) {
+                const totalBytes = rows[0]?.total_bytes ?? 0;
+                const fileBuf = new Uint8Array(totalBytes);
+                let offset = 0;
+                for (const r of rows) {
+                  const chunkBytes = toUint8Array(r.data);
+                  fileBuf.set(chunkBytes, offset);
+                  offset += chunkBytes.byteLength;
+                }
+                filesToUpload.push({
+                  fileId: fId,
+                  mime: rows[0]?.mime ?? "image/webp",
+                  data: fileBuf,
+                });
+              }
+            } catch (err) {
+              console.error("[board] Error loading file for GitHub export:", fId, err);
+            }
+          }
+        }
+      }
+
+      const exportResult = await exportBoardToGitHub({
+        token,
+        repo,
+        boardId: this.boardId,
+        teacherId,
+        elements: activeElements,
+        files: filesToUpload,
+        existingGitAssets: this.gitUploadedAssets,
+      });
+
+      if (exportResult.ok) {
+        if (exportResult.uploadedAssets) {
+          for (const fId of exportResult.uploadedAssets) {
+            this.gitUploadedAssets.add(fId);
+            this.saveMetaKey(`git_asset_${fId}`, "1");
+          }
+        }
+
+        this.lastBackupAt = effectiveNow;
+        this.saveMetaKey("last_backup_at", String(effectiveNow));
+
+        if (this.env.DB) {
+          try {
+            await this.env.DB.prepare(
+              "UPDATE boards SET last_backup_at = ?1, updated_at = ?2 WHERE id = ?3",
+            )
+              .bind(effectiveNow, effectiveNow, this.boardId)
+              .run();
+          } catch (err) {
+            console.error("[board] Error updating last_backup_at in D1:", err);
+          }
+        }
+
+        console.log(
+          JSON.stringify({
+            event: "git_backup_success",
+            boardRef: this.boardRef,
+            boardId: this.boardId,
+            commitSha: exportResult.commitSha,
+            timestamp: effectiveNow,
+          }),
+        );
+      }
+    } else {
+      console.warn(
+        JSON.stringify({
+          event: "git_backup_skipped_no_config",
+          boardRef: this.boardRef,
+          boardId: this.boardId,
+          timestamp: effectiveNow,
+        }),
+      );
+    }
+
+    this.backupPendingAt = null;
+    this.saveMetaKey("backup_pending_at", "");
+  }
+
   override async alarm(): Promise<void> {
     const scheduledAlarmTime = await this.ctx.storage.getAlarm();
     const effectiveNow = scheduledAlarmTime ?? Date.now();
     this.alarmScheduled = false;
+
+    // Stage 1: Fast snapshot flush if dirty
     if (this.dirty) {
       this.flushSnapshot("alarm", effectiveNow);
+    }
+
+    // Stage 2: Quiet window check
+    if (this.backupPendingAt !== null) {
+      if (effectiveNow >= this.backupPendingAt + this.backupQuietMs) {
+        await this.performQuietWindowBackup(effectiveNow);
+      } else {
+        const quietExpiration = this.backupPendingAt + this.backupQuietMs;
+        this.alarmScheduled = true;
+        await this.ctx.storage.setAlarm(quietExpiration);
+      }
     }
   }
 
@@ -1821,6 +2286,9 @@ export class Board extends DurableObject<Env> {
       totalRowsWritten: this.totalRowsWritten,
       dirty: this.dirty,
       alarmScheduled: this.alarmScheduled,
+      backupPendingAt: this.backupPendingAt,
+      lastBackupAt: this.lastBackupAt,
+      lastLocalBackupAt: this.lastLocalBackupAt,
       snapshotCorrupted: this.snapshotCorrupted,
       snapshotSaveBlocked: this.snapshotSaveBlocked,
     };

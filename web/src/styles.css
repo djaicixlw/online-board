@@ -19,30 +19,54 @@ body,
 .board-viewport {
   position: relative;
   width: 100vw;
-  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
+  background-color: #ffffff;
 }
 
 .board-canvas-container {
-  width: 100vw;
-  height: 100vh;
+  flex: 1 1 0%;
+  min-height: 0;
+  width: 100%;
+  position: relative;
   overflow: hidden;
   touch-action: none;
 }
 
+/* Shift Excalidraw toolbar to the right, leaving left side (hamburger menu ☰ and properties) completely clear */
+.board-canvas-container .excalidraw .App-toolbar-container {
+  left: auto !important;
+  right: 24px !important;
+  transform: none !important;
+}
+
+/* Ensure hamburger menu dropdown and popups stay above other panels */
+.board-canvas-container .excalidraw .main-menu,
+.board-canvas-container .excalidraw .dropdown-menu {
+  z-index: 100 !important;
+}
+
 .board-top-bar {
-  position: fixed;
-  top: 10px;
-  right: 12px;
+  height: 44px;
+  flex-shrink: 0;
+  position: static;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
   z-index: 20;
+  box-sizing: border-box;
+}
+
+.board-top-bar-left,
+.board-top-bar-right {
   display: flex;
   align-items: center;
   gap: 8px;
-  pointer-events: none;
-}
-
-.board-top-bar > * {
-  pointer-events: auto;
 }
 
 .board-status-pill {
@@ -144,7 +168,7 @@ body,
 }
 
 .board-cursors-layer {
-  position: fixed;
+  position: absolute;
   inset: 0;
   pointer-events: none;
   z-index: 15;
@@ -282,10 +306,8 @@ body,
 
 @media (max-width: 768px) {
   .board-top-bar {
-    top: 6px;
-    right: 6px;
-    gap: 4px;
-    max-width: calc(100vw - 12px);
+    height: 40px;
+    padding: 0 8px;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
@@ -293,6 +315,12 @@ body,
 
   .board-top-bar::-webkit-scrollbar {
     display: none;
+  }
+
+  .board-top-bar-left,
+  .board-top-bar-right {
+    gap: 4px;
+    flex-shrink: 0;
   }
 
   .board-top-chip,

@@ -24,6 +24,7 @@ interface BoardItem {
   notes: string;
   created_at: number;
   updated_at: number;
+  last_backup_at?: number | null;
 }
 
 const STORAGE_KEY_TOKEN = "board.teacherToken";
@@ -32,6 +33,13 @@ function formatDate(ts: number): string {
   const d = new Date(ts);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}`;
+}
+
+function formatDateTime(ts: number | null | undefined): string {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 export default function TeacherCabinet() {
@@ -48,6 +56,18 @@ export default function TeacherCabinet() {
 
   const [boards, setBoards] = useState<BoardItem[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Backup & restore modal states (T5)
+  const [restoreModalBoard, setRestoreModalBoard] = useState<BoardItem | null>(null);
+  const [localBackupInfo, setLocalBackupInfo] = useState<{
+    backed_up_at: number;
+    element_count: number;
+  } | null>(null);
+  const [gitBackupsList, setGitBackupsList] = useState<
+    Array<{ sha: string; message: string; date: string; author: string }>
+  >([]);
+  const [isLoadingBackups, setIsLoadingBackups] = useState<boolean>(false);
+  const [isRestoring, setIsRestoring] = useState<boolean>(false);
 
   // Student notes debounced autosave state
   const [studentNotesDraft, setStudentNotesDraft] = useState<string>("");
@@ -323,6 +343,93 @@ export default function TeacherCabinet() {
     }
   };
 
+  const handleOpenRestoreModal = useCallback(
+    async (b: BoardItem) => {
+      setRestoreModalBoard(b);
+      setIsLoadingBackups(true);
+      setLocalBackupInfo(null);
+      setGitBackupsList([]);
+      try {
+        const res = await authFetch(`/api/boards/${b.id}/backups`);
+        if (res.ok) {
+          const data = (await res.json()) as {
+            ok: boolean;
+            local_backup: { backed_up_at: number; element_count: number } | null;
+            git_backups: Array<{ sha: string; message: string; date: string; author: string }>;
+          };
+          if (data.ok) {
+            setLocalBackupInfo(data.local_backup);
+            setGitBackupsList(data.git_backups || []);
+          }
+        }
+      } catch (err) {
+        console.error("Error fetching backups:", err);
+      } finally {
+        setIsLoadingBackups(false);
+      }
+    },
+    [authFetch],
+  );
+
+  const handleExecuteRestore = useCallback(
+    async (source: "local_backup" | "git", ref?: string) => {
+      if (!restoreModalBoard) return;
+      if (!window.confirm(RU_STRINGS.restoreConfirmMessage)) return;
+      setIsRestoring(true);
+      try {
+        const res = await authFetch(`/api/boards/${restoreModalBoard.id}/restore`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            source === "local_backup" ? { source: "local_backup" } : { source: "git", ref },
+          ),
+        });
+        if (res.ok) {
+          showToast(RU_STRINGS.restoreSuccessToast);
+          setRestoreModalBoard(null);
+          loadBoards();
+        } else {
+          showToast(RU_STRINGS.restoreFailedToast);
+        }
+      } catch {
+        showToast(RU_STRINGS.restoreFailedToast);
+      } finally {
+        setIsRestoring(false);
+      }
+    },
+    [restoreModalBoard, authFetch, showToast, loadBoards],
+  );
+
+  const handleImportExcalidraw = useCallback(
+    async (boardId: string, file: File) => {
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text) as { elements?: unknown[] };
+        if (!parsed || !Array.isArray(parsed.elements)) {
+          showToast(RU_STRINGS.fileImportError);
+          return;
+        }
+        const res = await authFetch(`/api/boards/${boardId}/restore`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source: "file",
+            elements: parsed.elements,
+          }),
+        });
+        if (res.ok) {
+          showToast(RU_STRINGS.importSuccessToast);
+          loadBoards();
+        } else {
+          showToast(RU_STRINGS.restoreFailedToast);
+        }
+      } catch {
+        showToast(RU_STRINGS.fileImportError);
+      }
+    },
+    [authFetch, showToast, loadBoards],
+  );
+
   const handleBoardNotesChange = (boardId: string, text: string) => {
     setBoardNotesDrafts((prev) => ({ ...prev, [boardId]: text }));
     if (boardNotesTimersRef.current[boardId]) {
@@ -525,6 +632,16 @@ export default function TeacherCabinet() {
                         <span className="student-badge">{linkedStudent.nickname}</span>
                       )}
                       <span className="board-date">{formatDate(b.created_at)}</span>
+                      <span
+                        className="board-backup-status"
+                        title={
+                          b.last_backup_at ? new Date(b.last_backup_at).toLocaleString("ru-RU") : ""
+                        }
+                      >
+                        {b.last_backup_at
+                          ? `${RU_STRINGS.backupStatusPrefix} ${formatDateTime(b.last_backup_at)}`
+                          : RU_STRINGS.noBackupText}
+                      </span>
                     </div>
                   </div>
 
@@ -561,6 +678,28 @@ export default function TeacherCabinet() {
                     </button>
                     <button
                       type="button"
+                      className="button-secondary-sm"
+                      onClick={() => handleOpenRestoreModal(b)}
+                    >
+                      {RU_STRINGS.restoreBoardButton}
+                    </button>
+                    <label className="button-secondary-sm board-import-label">
+                      {RU_STRINGS.importBoardButton}
+                      <input
+                        type="file"
+                        accept=".excalidraw,application/json"
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            handleImportExcalidraw(b.id, file);
+                            e.target.value = "";
+                          }
+                        }}
+                      />
+                    </label>
+                    <button
+                      type="button"
                       className="button-danger-sm"
                       onClick={() => handleDeleteBoard(b.id)}
                     >
@@ -578,6 +717,87 @@ export default function TeacherCabinet() {
           </div>
         </main>
       </div>
+
+      {restoreModalBoard && (
+        <div className="modal-backdrop">
+          <div className="modal-card">
+            <h2 className="modal-title">{RU_STRINGS.restoreModalTitle}</h2>
+            <p className="modal-subtitle">
+              {RU_STRINGS.restoreModalSubtitle} ({restoreModalBoard.title})
+            </p>
+
+            <div className="restore-sections">
+              <div className="restore-section">
+                <h3>{RU_STRINGS.localBackupTitle}</h3>
+                {localBackupInfo ? (
+                  <div className="restore-backup-row">
+                    <div>
+                      <strong>{formatDateTime(localBackupInfo.backed_up_at)}</strong>
+                      <span className="restore-element-count">
+                        ({localBackupInfo.element_count} элементов)
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="button-primary-sm"
+                      disabled={isRestoring}
+                      onClick={() => handleExecuteRestore("local_backup")}
+                    >
+                      {RU_STRINGS.restoreFromLocalButton}
+                    </button>
+                  </div>
+                ) : (
+                  <p className="restore-empty-text">
+                    {isLoadingBackups ? "Загрузка..." : RU_STRINGS.noLocalBackupText}
+                  </p>
+                )}
+              </div>
+
+              <div className="restore-section">
+                <h3>{RU_STRINGS.gitBackupsTitle}</h3>
+                {gitBackupsList.length > 0 ? (
+                  <div className="restore-git-list">
+                    {gitBackupsList.map((c) => (
+                      <div key={c.sha} className="restore-backup-row">
+                        <div className="restore-git-meta">
+                          <code className="restore-commit-sha">{c.sha.slice(0, 7)}</code>
+                          <span className="restore-commit-msg">{c.message}</span>
+                          <span className="restore-commit-date">
+                            {new Date(c.date).toLocaleDateString("ru-RU")}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          className="button-secondary-sm"
+                          disabled={isRestoring}
+                          onClick={() => handleExecuteRestore("git", c.sha)}
+                        >
+                          {RU_STRINGS.restoreFromGitButton}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="restore-empty-text">
+                    {isLoadingBackups ? "Загрузка..." : RU_STRINGS.noGitBackupsText}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="button-secondary"
+                disabled={isRestoring}
+                onClick={() => setRestoreModalBoard(null)}
+              >
+                {RU_STRINGS.nickCancelButton}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

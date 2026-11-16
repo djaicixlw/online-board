@@ -347,6 +347,70 @@ export class MockSqlStorage {
       };
     }
 
+    if (upper.startsWith("DELETE FROM META WHERE KEY =")) {
+      const key = String(bindings[0] ?? "");
+      const existed = this.metaTable.has(key);
+      this.metaTable.delete(key);
+      return {
+        rowsRead: 0,
+        rowsWritten: existed ? 1 : 0,
+        toArray: () => [],
+      };
+    }
+
+    if (upper.startsWith("DELETE FROM SNAPSHOT_BACKUP")) {
+      const count = this.snapshotBackupTable.size;
+      this.snapshotBackupTable.clear();
+      return {
+        rowsRead: 0,
+        rowsWritten: count,
+        toArray: () => [],
+      };
+    }
+
+    if (upper.startsWith("INSERT INTO SNAPSHOT_BACKUP") && upper.includes("SELECT")) {
+      const backedUpAt = Number(bindings[0] ?? Date.now());
+      let copied = 0;
+      for (const [idx, data] of this.snapshotTable.entries()) {
+        this.snapshotBackupTable.set(idx, { data: new Uint8Array(data), backedUpAt });
+        copied += 1;
+      }
+      return {
+        rowsRead: this.snapshotTable.size,
+        rowsWritten: copied,
+        toArray: () => [],
+      };
+    }
+
+    if (upper.startsWith("SELECT CHUNK_IDX, DATA, BACKED_UP_AT FROM SNAPSHOT_BACKUP")) {
+      const rows = Array.from(this.snapshotBackupTable.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([idx, row]) => ({
+          chunk_idx: idx,
+          data: row.data,
+          backed_up_at: row.backedUpAt,
+        }));
+      return {
+        rowsRead: rows.length,
+        rowsWritten: 0,
+        toArray: () => rows,
+      };
+    }
+
+    if (upper.startsWith("SELECT CHUNK_IDX, DATA FROM SNAPSHOT_BACKUP")) {
+      const rows = Array.from(this.snapshotBackupTable.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([idx, row]) => ({
+          chunk_idx: idx,
+          data: row.data,
+        }));
+      return {
+        rowsRead: rows.length,
+        rowsWritten: 0,
+        toArray: () => rows,
+      };
+    }
+
     if (upper.startsWith("INSERT OR REPLACE INTO SNAPSHOT_BACKUP")) {
       const idx = Number(bindings[0]);
       const rawData = bindings[1];

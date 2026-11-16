@@ -61,6 +61,7 @@ const wrappedReconcile: ReconcileElementsFn = (localElements, remoteElements, lo
     remoteElements as unknown as Parameters<typeof restoreElements>[0],
     null,
   );
+  let reconciled: ExcalidrawElementLike[];
   if (typeof excalidrawReconcileElements === "function") {
     try {
       const fn = excalidrawReconcileElements as unknown as (
@@ -70,13 +71,42 @@ const wrappedReconcile: ReconcileElementsFn = (localElements, remoteElements, lo
       ) => ExcalidrawElementLike[];
       const res = fn(safeLocal, safeRemote, localAppState);
       if (Array.isArray(res) && res.length >= Math.max(safeLocal.length, safeRemote.length)) {
-        return res;
+        reconciled = res;
+      } else {
+        reconciled = mergeSceneElements(safeLocal, safeRemote, localAppState);
       }
     } catch {
-      // Fallback to deterministic version/versionNonce reconciliation
+      reconciled = mergeSceneElements(safeLocal, safeRemote, localAppState);
     }
+  } else {
+    reconciled = mergeSceneElements(safeLocal, safeRemote, localAppState);
   }
-  return mergeSceneElements(safeLocal, safeRemote, localAppState);
+
+  // T5 Part B: Preserve local in-progress text editing element against remote overwrites
+  const editing = localAppState?.editingTextElement as
+    (ExcalidrawElementLike & { text?: string; originalText?: string }) | null | undefined;
+  if (editing && editing.id) {
+    const localEditing = (safeLocal.find((el) => el.id === editing.id) || editing) as
+      (ExcalidrawElementLike & { text?: string; originalText?: string }) | undefined;
+    reconciled = reconciled.map((el) => {
+      if (el.id === editing.id) {
+        return {
+          ...el,
+          ...localEditing,
+          text: editing.text ?? localEditing?.text ?? (el as { text?: string }).text ?? "",
+          originalText:
+            editing.originalText ??
+            localEditing?.originalText ??
+            (el as { originalText?: string }).originalText ??
+            "",
+          version: Math.max(el.version, localEditing?.version ?? 0, editing.version ?? 0) + 1,
+        };
+      }
+      return el;
+    });
+  }
+
+  return reconciled;
 };
 
 export default function BoardView({ boardId }: { boardId: string }) {
@@ -140,11 +170,32 @@ export default function BoardView({ boardId }: { boardId: string }) {
       }
       isApplyingRemoteRef.current = true;
       try {
+        // T5 Part B: Preserve local in-progress text editing element during remote patch application
+        const currentAppState = api.getAppState?.();
+        const editing = currentAppState?.editingTextElement as
+          (ExcalidrawElementLike & { text?: string; originalText?: string }) | null | undefined;
+
+        let finalElements = restored;
+        if (editing && editing.id) {
+          finalElements = restored.map((el) => {
+            if (el.id === editing.id) {
+              return {
+                ...el,
+                text: editing.text ?? (el as { text?: string }).text ?? "",
+                originalText:
+                  editing.originalText ?? (el as { originalText?: string }).originalText ?? "",
+                version: Math.max(el.version, editing.version ?? 0) + 1,
+              };
+            }
+            return el;
+          });
+        }
+
         const updatePayload: {
           elements: readonly ExcalidrawElementLike[];
           captureUpdate?: unknown;
         } = {
-          elements: restored,
+          elements: finalElements,
         };
         if (
           CaptureUpdateAction &&
@@ -668,66 +719,76 @@ export default function BoardView({ boardId }: { boardId: string }) {
     >
       {/* Top status bar with connection banner, nickname button, pen mode toggle, and .excalidraw file controls */}
       <header className="board-top-bar" data-testid="board-top-bar">
-        {statusText && (
-          <div
-            className={`board-status-pill board-status-${connectionStatus}`}
-            data-testid="connection-status-banner"
-            role="status"
-            aria-live="polite"
-          >
-            <span className="board-status-dot" />
-            <span>{statusText}</span>
-          </div>
-        )}
+        <div className="board-top-bar-left">
+          {statusText && (
+            <div
+              className={`board-status-pill board-status-${connectionStatus}`}
+              data-testid="connection-status-banner"
+              role="status"
+              aria-live="polite"
+            >
+              <span className="board-status-dot" />
+              <span>{statusText}</span>
+            </div>
+          )}
 
-        {savedNick && (
+          {collaborators.length > 0 && (
+            <span className="board-collab-counter" data-testid="collaborators-counter">
+              {RU_STRINGS.collaboratorsCountPrefix} {collaborators.length}
+            </span>
+          )}
+        </div>
+
+        <div className="board-top-bar-right">
+          {savedNick && (
+            <button
+              type="button"
+              className="board-top-chip"
+              onClick={handleOpenNickDialog}
+              aria-label={RU_STRINGS.changeNickButtonAriaLabel}
+              data-testid="change-nick-button"
+            >
+              {RU_STRINGS.changeNickButtonPrefix} <strong>{savedNick}</strong>
+            </button>
+          )}
+
+          <button
+            type="button"
+            className={`board-top-chip ${penMode ? "board-top-chip-active" : ""}`}
+            onClick={handleTogglePenMode}
+            title={RU_STRINGS.penModeToggleTitle}
+            data-testid="pen-mode-toggle"
+          >
+            {penMode ? RU_STRINGS.penModeActiveLabel : RU_STRINGS.penModeAutoLabel}
+          </button>
+
           <button
             type="button"
             className="board-top-chip"
-            onClick={handleOpenNickDialog}
-            aria-label={RU_STRINGS.changeNickButtonAriaLabel}
-            data-testid="change-nick-button"
+            onClick={handleSaveExcalidrawFile}
+            data-testid="save-excalidraw-button"
           >
-            {RU_STRINGS.changeNickButtonPrefix} <strong>{savedNick}</strong>
+            {RU_STRINGS.saveExcalidrawFileButton}
           </button>
-        )}
 
-        <button
-          type="button"
-          className={`board-top-chip ${penMode ? "board-top-chip-active" : ""}`}
-          onClick={handleTogglePenMode}
-          title={RU_STRINGS.penModeToggleTitle}
-          data-testid="pen-mode-toggle"
-        >
-          {penMode ? RU_STRINGS.penModeActiveLabel : RU_STRINGS.penModeAutoLabel}
-        </button>
+          <button
+            type="button"
+            className="board-top-chip"
+            onClick={() => fileInputRef.current?.click()}
+            data-testid="open-excalidraw-button"
+          >
+            {RU_STRINGS.openExcalidrawFileButton}
+          </button>
 
-        <button
-          type="button"
-          className="board-top-chip"
-          onClick={handleSaveExcalidrawFile}
-          data-testid="save-excalidraw-button"
-        >
-          {RU_STRINGS.saveExcalidrawFileButton}
-        </button>
-
-        <button
-          type="button"
-          className="board-top-chip"
-          onClick={() => fileInputRef.current?.click()}
-          data-testid="open-excalidraw-button"
-        >
-          {RU_STRINGS.openExcalidrawFileButton}
-        </button>
-
-        <a
-          href="/teacher"
-          className="board-top-chip"
-          title={RU_STRINGS.goToTeacherCabinet}
-          data-testid="teacher-cabinet-link"
-        >
-          {RU_STRINGS.teacherCabinetTitle}
-        </a>
+          <a
+            href="/teacher"
+            className="board-top-chip"
+            title={RU_STRINGS.goToTeacherCabinet}
+            data-testid="teacher-cabinet-link"
+          >
+            {RU_STRINGS.teacherCabinetTitle}
+          </a>
+        </div>
 
         <input
           ref={fileInputRef}
@@ -737,12 +798,6 @@ export default function BoardView({ boardId }: { boardId: string }) {
           onChange={handleOpenExcalidrawFileChange}
           data-testid="excalidraw-file-input"
         />
-
-        {collaborators.length > 0 && (
-          <span className="board-collab-counter" data-testid="collaborators-counter">
-            {RU_STRINGS.collaboratorsCountPrefix} {collaborators.length}
-          </span>
-        )}
       </header>
 
       {activeErrorText && (
@@ -750,38 +805,6 @@ export default function BoardView({ boardId }: { boardId: string }) {
           {activeErrorText}
         </div>
       )}
-
-      {/* Smooth hardware-accelerated remote collaborator cursors layer */}
-      <div className="board-cursors-layer" aria-hidden="true" data-testid="remote-cursors-layer">
-        {remoteCursors.map((cursor) => {
-          const screenX = (cursor.x + scrollX) * zoomValue;
-          const screenY = (cursor.y + scrollY) * zoomValue;
-          return (
-            <div
-              key={cursor.clientId}
-              className="board-remote-cursor"
-              data-testid={`remote-cursor-${cursor.clientId}`}
-              style={{
-                transform: `translate3d(${screenX.toFixed(1)}px, ${screenY.toFixed(1)}px, 0)`,
-              }}
-            >
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill={cursor.color}
-                stroke="#ffffff"
-                strokeWidth="2"
-              >
-                <path d="M4 3l16 7-7 2-2 7-7-16z" />
-              </svg>
-              <span className="board-remote-cursor-nick" style={{ backgroundColor: cursor.color }}>
-                {cursor.nick}
-              </span>
-            </div>
-          );
-        })}
-      </div>
 
       {/* Canvas wrapper: pointer capture is scoped strictly to the canvas container so UI header and modal buttons are never blocked */}
       <div
@@ -832,12 +855,56 @@ export default function BoardView({ boardId }: { boardId: string }) {
           }
         }}
       >
+        {/* Smooth hardware-accelerated remote collaborator cursors layer */}
+        <div className="board-cursors-layer" aria-hidden="true" data-testid="remote-cursors-layer">
+          {remoteCursors.map((cursor) => {
+            const screenX = (cursor.x + scrollX) * zoomValue;
+            const screenY = (cursor.y + scrollY) * zoomValue;
+            return (
+              <div
+                key={cursor.clientId}
+                className="board-remote-cursor"
+                data-testid={`remote-cursor-${cursor.clientId}`}
+                style={{
+                  transform: `translate3d(${screenX.toFixed(1)}px, ${screenY.toFixed(1)}px, 0)`,
+                }}
+              >
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill={cursor.color}
+                  stroke="#ffffff"
+                  strokeWidth="2"
+                >
+                  <path d="M4 3l16 7-7 2-2 7-7-16z" />
+                </svg>
+                <span
+                  className="board-remote-cursor-nick"
+                  style={{ backgroundColor: cursor.color }}
+                >
+                  {cursor.nick}
+                </span>
+              </div>
+            );
+          })}
+        </div>
         <Excalidraw
           langCode={RU_LOCALE_CODE}
           generateIdForFile={handleGenerateIdForFile}
           excalidrawAPI={(api: unknown) => {
             const typedApi = api as ExcalidrawImperativeAPILike;
             excalidrawApiRef.current = typedApi;
+
+            // T5 Part B: Default grid mode (gridSize: 20) and magnetic snapping enabled
+            typedApi.updateScene({
+              appState: {
+                gridModeEnabled: true,
+                gridSize: 20,
+                objectsSnapModeEnabled: true,
+              },
+            });
+
             if (latestElementsRef.current && latestElementsRef.current.length > 0) {
               const safeElements = restoreElements(
                 latestElementsRef.current as unknown as Parameters<typeof restoreElements>[0],
@@ -871,6 +938,9 @@ export default function BoardView({ boardId }: { boardId: string }) {
               penMode: false,
               penDetected: false,
               viewBackgroundColor: "#ffffff",
+              gridModeEnabled: true,
+              gridSize: 20,
+              objectsSnapModeEnabled: true,
             },
           }}
           UIOptions={{
@@ -884,7 +954,33 @@ export default function BoardView({ boardId }: { boardId: string }) {
             },
           }}
           onChange={(elements, currentAppState, files) => {
-            const typedElements = elements as unknown as readonly ExcalidrawElementLike[];
+            let typedElements = elements as unknown as readonly ExcalidrawElementLike[];
+
+            // T5 Part B: Protect images from eraser tool while allowing selection + Delete
+            const activeToolType = (
+              currentAppState as { activeTool?: { type?: string } } | undefined
+            )?.activeTool?.type;
+            if (activeToolType === "eraser") {
+              let hasErasedImage = false;
+              const protectedElements = typedElements.map((el) => {
+                if (el.type === "image" && el.isDeleted) {
+                  hasErasedImage = true;
+                  return {
+                    ...el,
+                    isDeleted: false,
+                    opacity: el.opacity ?? 100,
+                  };
+                }
+                return el;
+              });
+              if (hasErasedImage) {
+                typedElements = protectedElements;
+                excalidrawApiRef.current?.updateScene({
+                  elements: protectedElements,
+                });
+              }
+            }
+
             latestElementsRef.current = typedElements;
             latestAppStateRef.current = currentAppState as unknown as Record<string, unknown>;
             setSceneElementCount(typedElements.filter((el) => el.isDeleted !== true).length);

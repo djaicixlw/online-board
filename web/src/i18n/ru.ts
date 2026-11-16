@@ -94,6 +94,24 @@ export const RU_STRINGS = {
   savingStatus: "Сохранение...",
   savedStatus: "Сохранено",
   goToTeacherCabinet: "Перейти в кабинет преподавателя",
+
+  // Backups and Restore (T5)
+  backupStatusPrefix: "Бэкап:",
+  noBackupText: "Бэкап: нет",
+  restoreBoardButton: "Откатить",
+  importBoardButton: "Импорт .excalidraw",
+  restoreModalTitle: "Откат и резервные копии",
+  restoreModalSubtitle: "Выберите точку восстановления для этой доски.",
+  localBackupTitle: "Локальный снимок (быстрый откат)",
+  noLocalBackupText: "Локальный снимок ещё не создан.",
+  restoreFromLocalButton: "Восстановить локальный снимок",
+  gitBackupsTitle: "Резервные копии в Git",
+  noGitBackupsText: "Резервных копий в Git пока нет.",
+  restoreFromGitButton: "Восстановить",
+  restoreConfirmMessage: "Текущее состояние доски будет сохранено перед откатом. Продолжить?",
+  restoreSuccessToast: "Доска успешно восстановлена!",
+  restoreFailedToast: "Ошибка при восстановлении доски.",
+  importSuccessToast: "Файл успешно импортирован на доску!",
 } as const;
 
 export const RU = RU_STRINGS;

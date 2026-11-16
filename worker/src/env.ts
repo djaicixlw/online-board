@@ -48,4 +48,19 @@ export interface Env {
    * Optional override for maximum serialized snapshot JSON byte size (default: 20 MiB).
    */
   MAX_SNAPSHOT_BYTES?: string | undefined;
+
+  /**
+   * Optional GitHub backup personal access token (fine-grained PAT).
+   */
+  GITHUB_BACKUP_TOKEN?: string | undefined;
+
+  /**
+   * Optional GitHub backup repository in "owner/repo" format.
+   */
+  GITHUB_BACKUP_REPO?: string | undefined;
+
+  /**
+   * Optional quiet window in milliseconds for triggering automatic Git backup (default: 600000 = 10m).
+   */
+  BACKUP_QUIET_MS?: string | undefined;
 }
