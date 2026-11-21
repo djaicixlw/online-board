@@ -224,7 +224,12 @@ async function handleApiRequest(
       const stub = env.BOARD.get(doId);
       const doRes = await stub.fetch(`http://do/internal/files/${fileId}`);
       if (!doRes.ok) {
-        return addSecurityHeaders(doRes, true);
+        const errHeaders = new Headers(doRes.headers);
+        errHeaders.set("Cache-Control", "no-store, no-cache, must-revalidate");
+        return addSecurityHeaders(
+          new Response(doRes.body, { status: doRes.status, headers: errHeaders }),
+          true,
+        );
       }
 
       const securedHeaders = new Headers(doRes.headers);

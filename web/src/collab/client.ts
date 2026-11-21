@@ -10,10 +10,11 @@ import type {
   PointerKind,
   ReconcileElementsFn,
   ServerToClientMessage,
+  ViewportSyncMessage,
 } from "./types.js";
 
-export const SCENE_SYNC_INTERVAL_MS = 100; // 10 Hz max
-export const CURSOR_SYNC_INTERVAL_MS = 100; // 10 Hz max
+export const SCENE_SYNC_INTERVAL_MS = 50; // 20 Hz max
+export const CURSOR_SYNC_INTERVAL_MS = 60; // ~16 Hz max
 export const PING_INTERVAL_MS = 30_000; // 1 ping per 30s
 export const RECONNECT_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 15_000] as const;
 export const BOARD_FULL_CLOSE_CODE = 1013;
@@ -49,6 +50,8 @@ export interface BoardCollabClientOptions {
   onStatusChange?: ((status: ConnectionStatus) => void) | undefined;
   onCollaboratorsChange?: ((collaborators: CollaboratorInfo[]) => void) | undefined;
   onRemoteCursorsChange?: ((cursors: InterpolatedCursor[]) => void) | undefined;
+  onFileUploaded?: ((fileId: string) => void) | undefined;
+  onViewportSync?: ((msg: ViewportSyncMessage) => void) | undefined;
   onServerError?: ((code: string) => void) | undefined;
   now?: (() => number) | undefined;
 }
@@ -91,6 +94,8 @@ export class BoardCollabClient {
   private readonly onStatusChange?: (status: ConnectionStatus) => void;
   private readonly onCollaboratorsChange?: (collaborators: CollaboratorInfo[]) => void;
   private readonly onRemoteCursorsChange?: (cursors: InterpolatedCursor[]) => void;
+  private readonly onFileUploaded?: (fileId: string) => void;
+  private readonly onViewportSync?: (msg: ViewportSyncMessage) => void;
   private readonly onServerError?: (code: string) => void;
   private readonly now: () => number;
 
@@ -152,6 +157,12 @@ export class BoardCollabClient {
     }
     if (options.onRemoteCursorsChange) {
       this.onRemoteCursorsChange = options.onRemoteCursorsChange;
+    }
+    if (options.onFileUploaded) {
+      this.onFileUploaded = options.onFileUploaded;
+    }
+    if (options.onViewportSync) {
+      this.onViewportSync = options.onViewportSync;
     }
     if (options.onServerError) {
       this.onServerError = options.onServerError;
@@ -365,38 +376,41 @@ export class BoardCollabClient {
   }
 
   /**
-   * Called on pointer release (`pointerup`) to ensure the final state of a stroke or shape
-   * is sent immediately (or at the end of the active 100 ms 10 Hz window).
+   * Called on pointer release (`pointerup`) or text blur to ensure the final state of a stroke, shape,
+   * or text edit is sent immediately without waiting for the batch timer.
    */
   public flushSceneOnPointerRelease(elements?: readonly ExcalidrawElementLike[]): void {
     const currentElements = elements ?? this.getLocalElements();
-    const changed = this.versionTracker.getChangedElements(currentElements);
-    if (changed.length === 0) {
+    this.clearSceneBatchTimer();
+    this.flushSceneChangesNow(currentElements);
+  }
+
+  public sendFileUploaded(fileId: string): void {
+    if (!/^[0-9a-f]{40}$/.test(fileId)) {
       return;
     }
+    this.sendRaw(
+      JSON.stringify({
+        type: "file_uploaded",
+        fileId,
+      }),
+    );
+  }
 
-    if (this.status !== "connected" || !this.ws || this.ws.readyState !== 1) {
-      return;
-    }
+  public sendViewportSync(active: boolean, scrollX: number, scrollY: number, zoom: number): void {
+    this.sendRaw(
+      JSON.stringify({
+        type: "viewport_sync",
+        active,
+        scrollX,
+        scrollY,
+        zoom,
+      }),
+    );
+  }
 
-    const nowMs = this.now();
-    const elapsed = nowMs - this.lastSceneSentAt;
-
-    if (elapsed >= SCENE_SYNC_INTERVAL_MS) {
-      this.clearSceneBatchTimer();
-      this.flushSceneChangesNow(currentElements);
-    } else if (this.sceneBatchTimer === null) {
-      this.pendingSceneElements = currentElements;
-      const waitMs = Math.max(0, SCENE_SYNC_INTERVAL_MS - elapsed);
-      this.sceneBatchTimer = setTimeout(() => {
-        this.sceneBatchTimer = null;
-        const pending = this.pendingSceneElements;
-        this.pendingSceneElements = null;
-        this.flushSceneChangesNow(pending ?? undefined);
-      }, waitMs);
-    } else {
-      this.pendingSceneElements = currentElements;
-    }
+  public requestSnapshot(): void {
+    this.sendRaw(JSON.stringify({ type: "get_snapshot" }));
   }
 
   private flushSceneChangesNow(overrideElements?: readonly ExcalidrawElementLike[]): void {
@@ -644,6 +658,19 @@ export class BoardCollabClient {
         this.now(),
       );
       this.onRemoteCursorsChange?.(this.cursorInterpolator.getSnapshot());
+      return;
+    }
+
+    if (parsed.type === "file_uploaded") {
+      if (typeof parsed.fileId === "string") {
+        this.onFileUploaded?.(parsed.fileId);
+      }
+      return;
+    }
+
+    if (parsed.type === "viewport_sync") {
+      this.onViewportSync?.(parsed);
+      return;
     }
   }
 

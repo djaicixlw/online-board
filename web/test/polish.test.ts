@@ -1,5 +1,11 @@
-import { describe, expect, it } from "vitest";
-import { mergeSceneElements, type ExcalidrawElementLike } from "../src/collab/index.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+  BoardCollabClient,
+  ImageDownloadManager,
+  mergeSceneElements,
+  type ExcalidrawElementLike,
+  type WebSocketLike,
+} from "../src/collab/index.js";
 
 describe("Task T5 Part B: Canvas Polish, Eraser Guard & Text Editing Concurrency", () => {
   it("preserves in-progress editingTextElement during remote update merges", () => {
@@ -164,5 +170,102 @@ describe("Task T5 Part B: Canvas Polish, Eraser Guard & Text Editing Concurrency
 
     // Since activeTool was NOT eraser, the image is successfully deleted
     expect(resultingElements[0]?.isDeleted).toBe(true);
+  });
+
+  it("ImageDownloadManager retries on 404 and fetches immediately when onFileUploaded is called", async () => {
+    const boardId = "TestBoard1234567890123";
+    const fileId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let attempts = 0;
+    const loadedFiles: string[] = [];
+
+    const fetchMock = vi.fn().mockImplementation(async () => {
+      attempts++;
+      if (attempts === 1) {
+        return new Response("Not found", { status: 404 });
+      }
+      return new Response(new Uint8Array([0x52, 0x49, 0x46, 0x46]), {
+        status: 200,
+        headers: { "Content-Type": "image/webp" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const manager = new ImageDownloadManager(boardId, (file) => {
+      loadedFiles.push(file.id);
+    });
+
+    manager.requestFiles([fileId]);
+    await vi.waitFor(() => expect(attempts).toBe(1));
+    expect(loadedFiles).toHaveLength(0);
+
+    // Call onFileUploaded -> triggers immediate retry without waiting for the exponential backoff timer
+    manager.onFileUploaded(fileId);
+    await vi.waitFor(() => expect(loadedFiles).toEqual([fileId]));
+    expect(attempts).toBe(2);
+
+    manager.dispose();
+    vi.unstubAllGlobals();
+  });
+
+  it("BoardCollabClient sends file_uploaded and viewport_sync messages correctly", () => {
+    let wsInstance: { readyState: number; onopen: (() => void) | null; sent: string[] } | null =
+      null;
+    const mockWsFactory = (url: string) => {
+      const ws = {
+        url,
+        readyState: 0,
+        onopen: null as (() => void) | null,
+        onmessage: null,
+        onclose: null,
+        onerror: null,
+        sent: [] as string[],
+        send: (data: string) => {
+          ws.sent.push(data);
+        },
+        close: vi.fn(),
+      };
+      wsInstance = ws;
+      return ws as unknown as WebSocketLike;
+    };
+
+    const client = new BoardCollabClient({
+      boardId: "TestBoard1234567890123",
+      clientId: "client-1",
+      nick: "Teacher",
+      createWebSocket: mockWsFactory,
+      getLocalElements: () => [],
+      onRemoteSceneApplied: () => {},
+    });
+
+    client.connect();
+    expect(client.getStatus()).toBe("connecting");
+
+    // Open connection
+    if (wsInstance) {
+      (wsInstance as { readyState: number; onopen: (() => void) | null }).readyState = 1;
+      (wsInstance as { onopen: (() => void) | null }).onopen?.();
+    }
+    expect(client.getStatus()).toBe("connected");
+
+    client.sendFileUploaded("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    expect((wsInstance as unknown as { sent: string[] }).sent).toContain(
+      JSON.stringify({
+        type: "file_uploaded",
+        fileId: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      }),
+    );
+
+    client.sendViewportSync(true, 150, -200, 1.5);
+    expect((wsInstance as unknown as { sent: string[] }).sent).toContain(
+      JSON.stringify({
+        type: "viewport_sync",
+        active: true,
+        scrollX: 150,
+        scrollY: -200,
+        zoom: 1.5,
+      }),
+    );
+
+    client.disconnect();
   });
 });

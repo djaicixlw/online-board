@@ -62,6 +62,8 @@ export type {
   CursorMessage,
   CursorToolKind,
   ExcalidrawElementLike,
+  FileUploadedMessage,
+  GetSnapshotMessage,
   HelloMessage,
   InterpolatedCursor,
   PingMessage,
@@ -73,4 +75,5 @@ export type {
   ServerErrorMessage,
   ServerToClientMessage,
   SnapshotMessage,
+  ViewportSyncMessage,
 } from "./types.js";

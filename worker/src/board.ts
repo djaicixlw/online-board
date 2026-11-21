@@ -1709,38 +1709,7 @@ export class Board extends DurableObject<Env> {
       rawText = textDecoder.decode(message);
     }
 
-    // 2. Enforce per-connection rate limit (<= 30 messages/sec)
-    if (session.windowStartMs === 0 || nowMs - session.windowStartMs >= 1000) {
-      if (session.messagesInWindow <= MAX_MESSAGES_PER_SECOND) {
-        session.sustainedExcessCount = 0;
-      }
-      session.windowStartMs = nowMs;
-      session.messagesInWindow = 0;
-    }
-
-    session.messagesInWindow += 1;
-    if (session.messagesInWindow > MAX_MESSAGES_PER_SECOND) {
-      session.messagesDropped += 1;
-      session.sustainedExcessCount += 1;
-      this.messagesDropped += 1;
-      this.writeAttachment(ws, session);
-
-      if (session.sustainedExcessCount >= SUSTAINED_RATE_LIMIT_EXCESS_THRESHOLD) {
-        console.log(
-          JSON.stringify({
-            event: "connection_closed_rate_limit",
-            boardRef: this.boardRef,
-            clientId: session.clientId,
-            messagesDropped: session.messagesDropped,
-            timestamp: nowMs,
-          }),
-        );
-        await this.closeSessionInternal(ws, session, 1008, "Rate limit exceeded", nowMs);
-      }
-      return;
-    }
-
-    // 3. Parse and validate JSON message
+    // 2. Parse and validate JSON message
     let parsed: unknown;
     try {
       parsed = JSON.parse(rawText);
@@ -1782,10 +1751,89 @@ export class Board extends DurableObject<Env> {
       return;
     }
 
+    // 3. Enforce per-connection rate limit with burst protection for scene_update and control packets
+    if (session.windowStartMs === 0 || nowMs - session.windowStartMs >= 1000) {
+      if (session.messagesInWindow <= MAX_MESSAGES_PER_SECOND) {
+        session.sustainedExcessCount = 0;
+      }
+      session.windowStartMs = nowMs;
+      session.messagesInWindow = 0;
+    }
+
+    session.messagesInWindow += 1;
+    const isBurstExemptType =
+      msgType === "scene_update" ||
+      msgType === "file_uploaded" ||
+      msgType === "viewport_sync" ||
+      msgType === "get_snapshot" ||
+      msgType === "ping" ||
+      msgType === "hello";
+    const effectiveLimit = isBurstExemptType ? 60 : MAX_MESSAGES_PER_SECOND;
+
+    if (session.messagesInWindow > effectiveLimit) {
+      session.messagesDropped += 1;
+      session.sustainedExcessCount += 1;
+      this.messagesDropped += 1;
+      this.writeAttachment(ws, session);
+
+      if (session.sustainedExcessCount >= SUSTAINED_RATE_LIMIT_EXCESS_THRESHOLD) {
+        console.log(
+          JSON.stringify({
+            event: "connection_closed_rate_limit",
+            boardRef: this.boardRef,
+            clientId: session.clientId,
+            messagesDropped: session.messagesDropped,
+            timestamp: nowMs,
+          }),
+        );
+        await this.closeSessionInternal(ws, session, 1008, "Rate limit exceeded", nowMs);
+      }
+      return;
+    }
+
     session.messagesAccepted += 1;
     this.messagesAccepted += 1;
 
     switch (msgType) {
+      case "get_snapshot": {
+        const snapshotMsg = JSON.stringify({
+          type: "snapshot",
+          elements: Array.from(this.elements.values()),
+          collaborators: this.getCollaborators(),
+        });
+        ws.send(snapshotMsg);
+        return;
+      }
+
+      case "file_uploaded": {
+        if (typeof msg.fileId === "string" && /^[0-9a-f]{40}$/.test(msg.fileId)) {
+          this.broadcastExcept(
+            ws,
+            JSON.stringify({
+              type: "file_uploaded",
+              fileId: msg.fileId,
+            }),
+          );
+        }
+        return;
+      }
+
+      case "viewport_sync": {
+        this.broadcastExcept(
+          ws,
+          JSON.stringify({
+            type: "viewport_sync",
+            leader_id: session.clientId ?? session.sessionId,
+            nick: session.nick,
+            active: msg.active === true,
+            scrollX: typeof msg.scrollX === "number" ? msg.scrollX : 0,
+            scrollY: typeof msg.scrollY === "number" ? msg.scrollY : 0,
+            zoom: typeof msg.zoom === "number" ? msg.zoom : 1,
+          }),
+        );
+        return;
+      }
+
       case "ping": {
         ws.send('{"type":"pong"}');
         this.writeAttachment(ws, session);

@@ -268,9 +268,12 @@ export class ImageDownloadManager {
   private readonly pending = new Set<string>();
   private readonly completed = new Set<string>();
   private readonly failed = new Set<string>();
+  private readonly retryAttempts = new Map<string, number>();
+  private readonly retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private activeCount = 0;
   private readonly queue: Array<() => Promise<void>> = [];
   private readonly maxConcurrent = 4;
+  private readonly retryDelays = [500, 1500, 3000, 6000, 10000];
 
   constructor(
     private readonly boardId: string,
@@ -283,7 +286,8 @@ export class ImageDownloadManager {
         !/^[0-9a-f]{40}$/.test(fileId) ||
         this.pending.has(fileId) ||
         this.completed.has(fileId) ||
-        this.failed.has(fileId)
+        this.failed.has(fileId) ||
+        this.retryTimers.has(fileId)
       ) {
         continue;
       }
@@ -291,6 +295,28 @@ export class ImageDownloadManager {
       this.queue.push(() => this.downloadFile(fileId));
     }
     this.processNext();
+  }
+
+  public onFileUploaded(fileId: string): void {
+    if (this.completed.has(fileId)) {
+      return;
+    }
+    const timer = this.retryTimers.get(fileId);
+    if (timer) {
+      clearTimeout(timer);
+      this.retryTimers.delete(fileId);
+    }
+    this.failed.delete(fileId);
+    this.pending.delete(fileId);
+    this.requestFiles([fileId]);
+  }
+
+  public dispose(): void {
+    for (const timer of this.retryTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.retryTimers.clear();
+    this.queue.length = 0;
   }
 
   private processNext(): void {
@@ -311,8 +337,7 @@ export class ImageDownloadManager {
     try {
       const res = await fetch(`/api/boards/${this.boardId}/files/${fileId}`);
       if (!res.ok) {
-        this.failed.add(fileId);
-        this.pending.delete(fileId);
+        this.handleDownloadFailure(fileId, res.status);
         return;
       }
       const mimeType = res.headers.get("Content-Type") || "image/webp";
@@ -320,6 +345,7 @@ export class ImageDownloadManager {
       const dataURL = await blobToDataUrl(blob);
       this.completed.add(fileId);
       this.pending.delete(fileId);
+      this.retryAttempts.delete(fileId);
       this.onFileLoaded({
         id: fileId,
         dataURL,
@@ -327,8 +353,24 @@ export class ImageDownloadManager {
         created: Date.now(),
       });
     } catch {
+      this.handleDownloadFailure(fileId, 0);
+    }
+  }
+
+  private handleDownloadFailure(fileId: string, _status: number): void {
+    this.pending.delete(fileId);
+    const attempt = this.retryAttempts.get(fileId) ?? 0;
+    // Retry up to 5 times with exponential backoff on 404, 5xx, or network errors
+    if (attempt < this.retryDelays.length) {
+      this.retryAttempts.set(fileId, attempt + 1);
+      const delay = this.retryDelays[attempt] ?? 5000;
+      const timer = setTimeout(() => {
+        this.retryTimers.delete(fileId);
+        this.requestFiles([fileId]);
+      }, delay);
+      this.retryTimers.set(fileId, timer);
+    } else {
       this.failed.add(fileId);
-      this.pending.delete(fileId);
     }
   }
 

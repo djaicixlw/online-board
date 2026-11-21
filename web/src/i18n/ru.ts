@@ -112,6 +112,14 @@ export const RU_STRINGS = {
   restoreSuccessToast: "Доска успешно восстановлена!",
   restoreFailedToast: "Ошибка при восстановлении доски.",
   importSuccessToast: "Файл успешно импортирован на доску!",
+
+  // Follow Mode & Canvas UX (T5.1)
+  followModeToggleOn: "Вести за собой",
+  followModeToggleOff: "Остановить показ",
+  followModeBanner: "Вы следуете за",
+  followModeDetach: "Открепиться",
+  canvasHint: "Зум: колёсико мыши. Перемещение: колёсико-клик, Пробел или инструмент «Рука»",
+  jumpToUserPrefix: "Перейти к",
 } as const;
 
 export const RU = RU_STRINGS;

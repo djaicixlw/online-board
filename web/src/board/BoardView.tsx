@@ -19,6 +19,7 @@ import {
   MAX_EXCALIDRAW_FILE_BYTES,
   mergeSceneElements,
   parseExcalidrawDocument,
+  pickCollaboratorColor,
   sanitizeNickname,
   saveNickname,
   serializeExcalidrawDocument,
@@ -30,6 +31,7 @@ import {
   type InterpolatedCursor,
   type PointerKind,
   type ReconcileElementsFn,
+  type ViewportSyncMessage,
 } from "../collab/index.js";
 import { RU_LOCALE_CODE, RU_STRINGS } from "../i18n/ru.js";
 import { normalizePointerKind, shouldSuppressTouchOrPalmDrawing } from "../input/pen-guard.js";
@@ -99,7 +101,7 @@ const wrappedReconcile: ReconcileElementsFn = (localElements, remoteElements, lo
             localEditing?.originalText ??
             (el as { originalText?: string }).originalText ??
             "",
-          version: Math.max(el.version, localEditing?.version ?? 0, editing.version ?? 0) + 1,
+          version: Math.max(el.version, localEditing?.version ?? 0, editing.version ?? 0),
         };
       }
       return el;
@@ -129,13 +131,30 @@ export default function BoardView({ boardId }: { boardId: string }) {
   const [persistentBoardError, setPersistentBoardError] = useState<string | null>(null);
   const [bannerError, setBannerError] = useState<string | null>(null);
 
+  // T5.1: Follow Mode & off-screen indicators
+  const [isLeading, setIsLeading] = useState<boolean>(false);
+  const isLeadingRef = useRef<boolean>(false);
+  isLeadingRef.current = isLeading;
+
+  const [followingLeader, setFollowingLeader] = useState<{ leaderId: string; nick: string } | null>(
+    null,
+  );
+  const [isDetached, setIsDetached] = useState<boolean>(false);
+  const isDetachedRef = useRef<boolean>(false);
+  isDetachedRef.current = isDetached;
+
+  const [isCollabDropdownOpen, setIsCollabDropdownOpen] = useState<boolean>(false);
+  const previousEditingTextIdRef = useRef<string | null>(null);
+  const lastViewportBroadcastRef = useRef<number>(0);
+  const isApplyingFollowerSyncRef = useRef<boolean>(false);
+
   const excalidrawApiRef = useRef<ExcalidrawImperativeAPILike | null>(null);
   const latestElementsRef = useRef<readonly ExcalidrawElementLike[]>([]);
   const latestAppStateRef = useRef<Record<string, unknown>>({
     exportEmbedScene: true,
     penMode: false,
     penDetected: false,
-    viewBackgroundColor: "#ffffff",
+    viewBackgroundColor: "transparent",
     scrollX: 0,
     scrollY: 0,
     zoom: { value: 1 },
@@ -145,6 +164,81 @@ export default function BoardView({ boardId }: { boardId: string }) {
   const activePointerKindRef = useRef<PointerKind>("mouse");
   const isApplyingRemoteRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleJumpToUser = useCallback((targetX: number, targetY: number) => {
+    const container = document.querySelector(".board-canvas-container");
+    const rect = container?.getBoundingClientRect();
+    const width = rect?.width ?? window.innerWidth;
+    const height = rect?.height ?? window.innerHeight;
+    const appState = latestAppStateRef.current;
+    const zoomObj = appState.zoom as { value?: number } | undefined;
+    const curZoom =
+      zoomObj && typeof zoomObj.value === "number" && zoomObj.value > 0 ? zoomObj.value : 1;
+
+    const newScrollX = width / 2 / curZoom - targetX;
+    const newScrollY = height / 2 / curZoom - targetY;
+
+    excalidrawApiRef.current?.updateScene({
+      appState: {
+        scrollX: newScrollX,
+        scrollY: newScrollY,
+      },
+    });
+    latestAppStateRef.current = {
+      ...latestAppStateRef.current,
+      scrollX: newScrollX,
+      scrollY: newScrollY,
+    };
+  }, []);
+
+  const handleRemoteViewportSync = useCallback((msg: ViewportSyncMessage) => {
+    if (isLeadingRef.current) {
+      return;
+    }
+    if (msg.active && msg.leader_id && msg.nick) {
+      const leaderId = msg.leader_id;
+      const leaderNick = msg.nick;
+      setFollowingLeader((prev) => {
+        if (!prev || prev.leaderId !== leaderId) {
+          setIsDetached(false);
+          return { leaderId, nick: leaderNick };
+        }
+        return prev;
+      });
+
+      if (!isDetachedRef.current) {
+        isApplyingFollowerSyncRef.current = true;
+        try {
+          excalidrawApiRef.current?.updateScene({
+            appState: {
+              scrollX: msg.scrollX,
+              scrollY: msg.scrollY,
+              zoom: { value: msg.zoom },
+            },
+          });
+          latestAppStateRef.current = {
+            ...latestAppStateRef.current,
+            scrollX: msg.scrollX,
+            scrollY: msg.scrollY,
+            zoom: { value: msg.zoom },
+          };
+        } finally {
+          setTimeout(() => {
+            isApplyingFollowerSyncRef.current = false;
+          }, 50);
+        }
+      }
+    } else if (msg.leader_id) {
+      const leaderId = msg.leader_id;
+      setFollowingLeader((prev) => {
+        if (prev && prev.leaderId === leaderId) {
+          setIsDetached(false);
+          return null;
+        }
+        return prev;
+      });
+    }
+  }, []);
 
   const applyRemoteScene = useCallback(
     (mergedElements: ExcalidrawElementLike[], nextCollaborators?: CollaboratorInfo[]) => {
@@ -170,7 +264,7 @@ export default function BoardView({ boardId }: { boardId: string }) {
       }
       isApplyingRemoteRef.current = true;
       try {
-        // T5 Part B: Preserve local in-progress text editing element during remote patch application
+        // T5 Part B: Preserve local in-progress text editing element during remote patch application without artificial version bumps
         const currentAppState = api.getAppState?.();
         const editing = currentAppState?.editingTextElement as
           (ExcalidrawElementLike & { text?: string; originalText?: string }) | null | undefined;
@@ -184,12 +278,13 @@ export default function BoardView({ boardId }: { boardId: string }) {
                 text: editing.text ?? (el as { text?: string }).text ?? "",
                 originalText:
                   editing.originalText ?? (el as { originalText?: string }).originalText ?? "",
-                version: Math.max(el.version, editing.version ?? 0) + 1,
+                version: Math.max(el.version, editing.version ?? 0),
               };
             }
             return el;
           });
         }
+        latestElementsRef.current = finalElements;
 
         const updatePayload: {
           elements: readonly ExcalidrawElementLike[];
@@ -239,7 +334,7 @@ export default function BoardView({ boardId }: { boardId: string }) {
       const api = excalidrawApiRef.current;
       if (api) {
         api.addFiles?.([file]);
-        api.updateScene({});
+        api.updateScene({ elements: api.getSceneElementsIncludingDeleted() });
       }
     });
 
@@ -268,6 +363,12 @@ export default function BoardView({ boardId }: { boardId: string }) {
       onStatusChange: (nextStatus) => setConnectionStatus(nextStatus),
       onCollaboratorsChange: (nextCollabs) => setCollaborators(nextCollabs),
       onRemoteCursorsChange: (cursors) => setRemoteCursors(cursors),
+      onFileUploaded: (fileId) => {
+        downloadManagerRef.current?.onFileUploaded(fileId);
+      },
+      onViewportSync: (msg) => {
+        handleRemoteViewportSync(msg);
+      },
       onServerError: (code) => {
         if (code === "board_not_saved") {
           setPersistentBoardError(RU_STRINGS.boardNotSavedError);
@@ -284,11 +385,12 @@ export default function BoardView({ boardId }: { boardId: string }) {
     }
 
     return () => {
+      downloadManagerRef.current?.dispose();
       downloadManagerRef.current = null;
       client.disconnect();
       collabClientRef.current = null;
     };
-  }, [boardId, applyRemoteScene]);
+  }, [boardId, applyRemoteScene, handleRemoteViewportSync]);
 
   // Security: eliminate external promotional/tracking links from Excalidraw subtrees
   // and guarantee rel="noopener noreferrer" for any valid external anchors in the DOM
@@ -357,6 +459,50 @@ export default function BoardView({ boardId }: { boardId: string }) {
 
     rafId = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(rafId);
+  }, []);
+
+  // T5.1: Native mouse wheel zoom without requiring Ctrl key
+  useEffect(() => {
+    const container = document.querySelector(".board-canvas-container");
+    if (!container) {
+      return;
+    }
+
+    const handleWheel = (e: WheelEvent) => {
+      // If ctrl, meta, shift, or alt is already pressed, let Excalidraw's built-in handlers process it
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) {
+        return;
+      }
+      // Re-dispatch as a synthetic WheelEvent with ctrlKey: true to invoke Excalidraw's built-in cursor-centric zoom
+      e.preventDefault();
+      e.stopPropagation();
+
+      const syntheticWheel = new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        clientX: e.clientX,
+        clientY: e.clientY,
+        screenX: e.screenX,
+        screenY: e.screenY,
+        deltaX: e.deltaX,
+        deltaY: e.deltaY,
+        deltaZ: e.deltaZ,
+        deltaMode: e.deltaMode,
+        ctrlKey: true,
+      });
+
+      e.target?.dispatchEvent(syntheticWheel);
+    };
+
+    container.addEventListener("wheel", handleWheel as EventListener, {
+      passive: false,
+      capture: true,
+    });
+    return () => {
+      container.removeEventListener("wheel", handleWheel as EventListener, {
+        capture: true,
+      });
+    };
   }, []);
 
   const handleNickSubmit = (e: React.FormEvent) => {
@@ -531,12 +677,18 @@ export default function BoardView({ boardId }: { boardId: string }) {
           },
         ]);
 
-        // Background upload with retry
+        // Background upload with retry and WebSocket notification on success
         uploadBoardFile(boardId, fileId, mimeType, arrayBuffer, () => {
           setBannerError(RU_STRINGS.imageQuotaExceededError);
-        }).catch(() => {
-          setBannerError(RU_STRINGS.imageUploadError);
-        });
+        })
+          .then((uploaded) => {
+            if (uploaded) {
+              collabClientRef.current?.sendFileUploaded(fileId);
+            }
+          })
+          .catch(() => {
+            setBannerError(RU_STRINGS.imageUploadError);
+          });
 
         return fileId;
       } catch (err: unknown) {
@@ -638,9 +790,15 @@ export default function BoardView({ boardId }: { boardId: string }) {
 
         uploadBoardFile(boardId, fileId, mimeType, arrayBuffer, () => {
           setBannerError(RU_STRINGS.imageQuotaExceededError);
-        }).catch(() => {
-          setBannerError(RU_STRINGS.imageUploadError);
-        });
+        })
+          .then((uploaded) => {
+            if (uploaded) {
+              collabClientRef.current?.sendFileUploaded(fileId);
+            }
+          })
+          .catch(() => {
+            setBannerError(RU_STRINGS.imageUploadError);
+          });
       } catch (err: unknown) {
         if (err instanceof Error && err.message === "image_too_large") {
           setBannerError(RU_STRINGS.imageTooLargeError);
@@ -733,13 +891,65 @@ export default function BoardView({ boardId }: { boardId: string }) {
           )}
 
           {collaborators.length > 0 && (
-            <span className="board-collab-counter" data-testid="collaborators-counter">
-              {RU_STRINGS.collaboratorsCountPrefix} {collaborators.length}
-            </span>
+            <div className="board-collab-dropdown-wrapper">
+              <button
+                type="button"
+                className="board-top-chip"
+                onClick={() => setIsCollabDropdownOpen((open) => !open)}
+                data-testid="collaborators-counter"
+                aria-haspopup="true"
+                aria-expanded={isCollabDropdownOpen}
+              >
+                {RU_STRINGS.collaboratorsCountPrefix} {collaborators.length}
+              </button>
+              {isCollabDropdownOpen && (
+                <div className="board-collab-dropdown-menu" data-testid="collaborators-dropdown">
+                  {collaborators.map((c) => {
+                    const cursor = remoteCursors.find((rc) => rc.clientId === c.client_id);
+                    const userColor = cursor?.color ?? pickCollaboratorColor(c.client_id);
+                    return (
+                      <button
+                        key={c.client_id}
+                        type="button"
+                        className="board-collab-item"
+                        onClick={() => {
+                          if (cursor) {
+                            handleJumpToUser(cursor.x, cursor.y);
+                          }
+                          setIsCollabDropdownOpen(false);
+                        }}
+                      >
+                        <span style={{ color: userColor, fontWeight: 600 }}>{c.nick}</span>
+                        {cursor && (
+                          <span style={{ fontSize: 11, color: "#64748b" }}>
+                            {RU_STRINGS.jumpToUserPrefix}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           )}
         </div>
 
         <div className="board-top-bar-right">
+          <button
+            type="button"
+            className={`board-top-chip ${isLeading ? "board-top-chip-active" : ""}`}
+            onClick={() => {
+              const nextLeading = !isLeading;
+              setIsLeading(nextLeading);
+              const sX = typeof scrollX === "number" ? scrollX : 0;
+              const sY = typeof scrollY === "number" ? scrollY : 0;
+              collabClientRef.current?.sendViewportSync(nextLeading, sX, sY, zoomValue);
+            }}
+            data-testid="follow-mode-toggle"
+            title={isLeading ? RU_STRINGS.followModeToggleOff : RU_STRINGS.followModeToggleOn}
+          >
+            {isLeading ? RU_STRINGS.followModeToggleOff : RU_STRINGS.followModeToggleOn}
+          </button>
           {savedNick && (
             <button
               type="button"
@@ -806,6 +1016,28 @@ export default function BoardView({ boardId }: { boardId: string }) {
         </div>
       )}
 
+      {/* T5.1: Follow Mode active banner */}
+      {followingLeader && !isDetached && (
+        <div className="board-follow-banner" data-testid="follow-mode-banner">
+          <span>
+            {RU_STRINGS.followModeBanner} <strong>{followingLeader.nick}</strong>
+          </span>
+          <button
+            type="button"
+            className="board-follow-detach-btn"
+            onClick={() => setIsDetached(true)}
+            data-testid="follow-mode-detach-btn"
+          >
+            {RU_STRINGS.followModeDetach}
+          </button>
+        </div>
+      )}
+
+      {/* T5.1: Canvas navigation hint */}
+      <div className="board-canvas-hint" data-testid="board-canvas-hint">
+        {RU_STRINGS.canvasHint}
+      </div>
+
       {/* Canvas wrapper: pointer capture is scoped strictly to the canvas container so UI header and modal buttons are never blocked */}
       <div
         className="board-canvas-container"
@@ -855,6 +1087,69 @@ export default function BoardView({ boardId }: { boardId: string }) {
           }
         }}
       >
+        {/* T5.1: Visual grid background synchronized with canvas pan and zoom without rigid snapping */}
+        <div
+          className="board-visual-grid"
+          aria-hidden="true"
+          data-testid="board-visual-grid"
+          style={{
+            backgroundPosition: `${((scrollX % (20 * zoomValue)) + 20 * zoomValue) % (20 * zoomValue)}px ${((scrollY % (20 * zoomValue)) + 20 * zoomValue) % (20 * zoomValue)}px`,
+            backgroundSize: `${20 * zoomValue}px ${20 * zoomValue}px`,
+          }}
+        />
+
+        {/* T5.1: Off-screen collaborator indicators layer */}
+        <div
+          className="board-offscreen-indicators-layer"
+          aria-hidden="true"
+          data-testid="offscreen-indicators-layer"
+        >
+          {remoteCursors.map((cursor) => {
+            const sX = (cursor.x + scrollX) * zoomValue;
+            const sY = (cursor.y + scrollY) * zoomValue;
+            const w = typeof window !== "undefined" ? window.innerWidth : 1200;
+            const h = typeof window !== "undefined" ? window.innerHeight : 800;
+            const padding = 40;
+
+            const isOffscreen = sX < 0 || sX > w || sY < 0 || sY > h;
+            if (!isOffscreen) {
+              return null;
+            }
+
+            const clampedX = Math.max(padding, Math.min(w - padding, sX));
+            const clampedY = Math.max(padding, Math.min(h - padding, sY));
+
+            let arrow = "→";
+            if (sX < 0 && sY < 0) arrow = "↖";
+            else if (sX > w && sY < 0) arrow = "↗";
+            else if (sX < 0 && sY > h) arrow = "↙";
+            else if (sX > w && sY > h) arrow = "↘";
+            else if (sX < 0) arrow = "←";
+            else if (sX > w) arrow = "→";
+            else if (sY < 0) arrow = "↑";
+            else if (sY > h) arrow = "↓";
+
+            return (
+              <button
+                key={`offscreen-${cursor.clientId}`}
+                type="button"
+                className="board-offscreen-indicator"
+                style={{
+                  left: `${clampedX}px`,
+                  top: `${clampedY}px`,
+                  backgroundColor: cursor.color,
+                }}
+                onClick={() => handleJumpToUser(cursor.x, cursor.y)}
+                data-testid={`offscreen-indicator-${cursor.clientId}`}
+                title={`${RU_STRINGS.jumpToUserPrefix} ${cursor.nick}`}
+              >
+                <span>{arrow}</span>
+                <span>{cursor.nick}</span>
+              </button>
+            );
+          })}
+        </div>
+
         {/* Smooth hardware-accelerated remote collaborator cursors layer */}
         <div className="board-cursors-layer" aria-hidden="true" data-testid="remote-cursors-layer">
           {remoteCursors.map((cursor) => {
@@ -896,12 +1191,12 @@ export default function BoardView({ boardId }: { boardId: string }) {
             const typedApi = api as ExcalidrawImperativeAPILike;
             excalidrawApiRef.current = typedApi;
 
-            // T5 Part B: Default grid mode (gridSize: 20) and magnetic snapping enabled
+            // T5.1: Smooth free drawing with smart object snapping (no rigid grid snap)
             typedApi.updateScene({
               appState: {
-                gridModeEnabled: true,
-                gridSize: 20,
+                gridModeEnabled: false,
                 objectsSnapModeEnabled: true,
+                viewBackgroundColor: "transparent",
               },
             });
 
@@ -937,9 +1232,8 @@ export default function BoardView({ boardId }: { boardId: string }) {
               exportEmbedScene: true,
               penMode: false,
               penDetected: false,
-              viewBackgroundColor: "#ffffff",
-              gridModeEnabled: true,
-              gridSize: 20,
+              viewBackgroundColor: "transparent",
+              gridModeEnabled: false,
               objectsSnapModeEnabled: true,
             },
           }}
@@ -981,6 +1275,60 @@ export default function BoardView({ boardId }: { boardId: string }) {
               }
             }
 
+            // T5.1: Detect when user finishes editing text (blur/commit) and ensure immediate propagation
+            const curEditing = (
+              currentAppState as { editingTextElement?: { id?: string } } | undefined
+            )?.editingTextElement;
+            const currentEditingTextId = curEditing?.id ?? null;
+            const wasEditingTextId = previousEditingTextIdRef.current;
+            previousEditingTextIdRef.current = currentEditingTextId;
+
+            if (wasEditingTextId && !currentEditingTextId) {
+              typedElements = typedElements.map((el) => {
+                if (el.id === wasEditingTextId) {
+                  return {
+                    ...el,
+                    version: el.version + 1,
+                    versionNonce: Math.floor(Math.random() * 1000000),
+                    updated: Date.now(),
+                  };
+                }
+                return el;
+              });
+              latestElementsRef.current = typedElements;
+              collabClientRef.current?.queueSceneUpdate(typedElements);
+              collabClientRef.current?.flushSceneOnPointerRelease(typedElements);
+            }
+
+            // T5.1: If follower manually moves or zooms the viewport, detach from the leader
+            if (followingLeader && !isDetachedRef.current && !isApplyingFollowerSyncRef.current) {
+              const curAppState = currentAppState as unknown as Record<string, unknown>;
+              const prevAppState = latestAppStateRef.current;
+              if (
+                curAppState.scrollX !== prevAppState.scrollX ||
+                curAppState.scrollY !== prevAppState.scrollY ||
+                (curAppState.zoom as { value?: number } | undefined)?.value !==
+                  (prevAppState.zoom as { value?: number } | undefined)?.value
+              ) {
+                setIsDetached(true);
+              }
+            }
+
+            // T5.1: If current user is leading, broadcast viewport updates (~15 Hz)
+            if (isLeadingRef.current) {
+              const nowMs = Date.now();
+              if (nowMs - lastViewportBroadcastRef.current >= 66) {
+                lastViewportBroadcastRef.current = nowMs;
+                const curAppState = currentAppState as unknown as Record<string, unknown>;
+                const sX = typeof curAppState.scrollX === "number" ? curAppState.scrollX : 0;
+                const sY = typeof curAppState.scrollY === "number" ? curAppState.scrollY : 0;
+                const zObj = curAppState.zoom as { value?: number } | undefined;
+                const zVal =
+                  zObj && typeof zObj.value === "number" && zObj.value > 0 ? zObj.value : 1;
+                collabClientRef.current?.sendViewportSync(true, sX, sY, zVal);
+              }
+            }
+
             latestElementsRef.current = typedElements;
             latestAppStateRef.current = currentAppState as unknown as Record<string, unknown>;
             setSceneElementCount(typedElements.filter((el) => el.isDeleted !== true).length);
@@ -1004,9 +1352,15 @@ export default function BoardView({ boardId }: { boardId: string }) {
                       .then((buf) => {
                         uploadBoardFile(boardId, fId, fileObj.mimeType || "image/webp", buf, () => {
                           setBannerError(RU_STRINGS.imageQuotaExceededError);
-                        }).catch(() => {
-                          setBannerError(RU_STRINGS.imageUploadError);
-                        });
+                        })
+                          .then((uploaded) => {
+                            if (uploaded) {
+                              collabClientRef.current?.sendFileUploaded(fId);
+                            }
+                          })
+                          .catch(() => {
+                            setBannerError(RU_STRINGS.imageUploadError);
+                          });
                       })
                       .catch(() => {});
                   } catch {

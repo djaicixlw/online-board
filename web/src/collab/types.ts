@@ -58,10 +58,42 @@ export interface ServerErrorMessage {
   code: string;
 }
 
-export type ClientToServerMessage = HelloMessage | SceneUpdateMessage | CursorMessage | PingMessage;
+export interface FileUploadedMessage {
+  type: "file_uploaded";
+  fileId: string;
+}
+
+export interface ViewportSyncMessage {
+  type: "viewport_sync";
+  leader_id?: string | undefined;
+  nick?: string | undefined;
+  active: boolean;
+  scrollX?: number | undefined;
+  scrollY?: number | undefined;
+  zoom?: number | undefined;
+}
+
+export interface GetSnapshotMessage {
+  type: "get_snapshot";
+}
+
+export type ClientToServerMessage =
+  | HelloMessage
+  | SceneUpdateMessage
+  | CursorMessage
+  | PingMessage
+  | FileUploadedMessage
+  | ViewportSyncMessage
+  | GetSnapshotMessage;
 
 export type ServerToClientMessage =
-  SnapshotMessage | SceneUpdateMessage | CursorMessage | PongMessage | ServerErrorMessage;
+  | SnapshotMessage
+  | SceneUpdateMessage
+  | CursorMessage
+  | PongMessage
+  | ServerErrorMessage
+  | FileUploadedMessage
+  | ViewportSyncMessage;
 
 /**
  * Connection status state for the UI status banner:
